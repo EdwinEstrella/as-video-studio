@@ -10404,7 +10404,9 @@ function campoArea(etiqueta, valor, alCambiar, pista, foco) {
  * cerrar sin leer.
  */
 
-const INICIO = { abierta: false, paso: 0, arrancando: false, accesoFallido: '' };
+/* `proveedor`: qué pestaña de la tarjeta de imágenes se está mirando. Es SOLO
+   de la pantalla: no se guarda en ningún sitio ni entra en ningún proyecto. */
+const INICIO = { abierta: false, paso: 0, arrancando: false, accesoFallido: '', proveedor: 'openai' };
 
 /* Las paradas de la guía. Cada una pinta su cuerpo con lo que haya cargado en
    `estadoConfig()` (las claves y las cuentas del CLI, que son las mismas que
@@ -10412,7 +10414,7 @@ const INICIO = { abierta: false, paso: 0, arrancando: false, accesoFallido: '' }
 const TARJETAS_INICIO = [
   { id: 'bienvenida', titulo: 'Bienvenido a AS Video Studio', pinta: tarjetaBienvenidaInicio },
   { id: 'claude', titulo: '1 · Tu cuenta de Claude', pinta: tarjetaClaudeInicio },
-  { id: 'openai', titulo: '2 · La clave de OpenAI (imágenes)', pinta: tarjetaOpenAIInicio },
+  { id: 'openai', titulo: '2 · Las imágenes', pinta: tarjetaImagenesInicio },
   { id: 'cartesia', titulo: '3 · La clave de Cartesia (voz)', pinta: tarjetaCartesiaInicio },
   { id: 'jamendo', titulo: '4 · La clave de Jamendo (música, opcional)', pinta: tarjetaJamendoInicio },
   { id: 'freesound', titulo: '5 · La clave de FreeSound (efectos, opcional)', pinta: tarjetaFreeSoundInicio },
@@ -10766,6 +10768,35 @@ function pasoDelAccesoGuia(cuenta, intento) {
     intento.estado === 'fallo' ? h('div', { clase: 'fila' },
       h('button', { clase: 'mini primario', onclick: () => arrancarAccesoGuia(cuenta) },
         'Pedir otro enlace')) : null);
+}
+
+/* La tarjeta de las imágenes: se elige con qué se dibujan los planos. El id de
+   la parada sigue siendo 'openai' porque es lo que mira `pasosPendientesInicio`:
+   hoy sólo OpenAI deja el paso hecho. */
+function tarjetaImagenesInicio() {
+  const eleccion = h('div', { clase: 'inicio-proveedor' },
+    [['openai', 'OpenAI'], ['google', 'Google']].map(([id, nombre]) => h('button', {
+      clase: INICIO.proveedor === id ? 'activo' : '',
+      'aria-pressed': String(INICIO.proveedor === id),
+      onclick: () => { INICIO.proveedor = id; pintarInicio(); },
+    }, nombre)));
+  return [eleccion].concat(INICIO.proveedor === 'google'
+    ? tarjetaGoogleInicio() : tarjetaOpenAIInicio());
+}
+
+/* GOOGLE TODAVÍA NO DIBUJA NADA: el motor no existe. La opción se enseña para
+   que se vea que viene, pero no llama a ninguna ruta ni guarda nada — una
+   pantalla que ofrece lo que el motor no sirve acaba llamando a una ruta que no
+   existe (CLAUDE.md, «Lo que NO hay»). Cuando llegue el motor, aquí va su acceso. */
+function tarjetaGoogleInicio() {
+  return [
+    h('div', { clase: 'pista' },
+      'Con Google (Gemini) los planos se dibujarían con tu cuenta de Google en vez '
+      + 'de con una clave de pago.'),
+    h('div', { clase: 'caja-aviso' },
+      'Todavía no está disponible en este Estudio. Por ahora las imágenes se '
+      + 'hacen con OpenAI: elige OpenAI para seguir.'),
+  ];
 }
 
 function tarjetaOpenAIInicio() {

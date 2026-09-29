@@ -2292,6 +2292,10 @@ button.avisa:hover:not(:disabled) { border-color: var(--aviso); }
 .inicio-pasos li { margin-bottom: 8px; }
 .inicio-pasos a { word-break: break-all; }
 .inicio-hecho { display: flex; align-items: center; gap: 9px; margin: 10px 0 4px; font-size: 13px; }
+/* OpenAI | Google en la tarjeta de las imágenes: dos botones del mismo ancho. */
+.inicio-proveedor { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 4px 0 14px; }
+.inicio-proveedor button { padding: 12px; font-size: 14px; font-weight: 600; }
+.inicio-proveedor button.activo { border-color: var(--acento); color: var(--acento); }
 .inicio-pie {
   display: flex; gap: 8px; align-items: center; margin-top: 18px;
   border-top: 1px solid var(--linea-suave); padding-top: 12px;
