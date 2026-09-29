@@ -11,3 +11,7 @@ despliegue/*.conf         text eol=lf
 despliegue/*.service      text eol=lf
 *.py              text eol=lf
 *.js              text eol=lf
+despliegue/docker/*.sh         text eol=lf
+despliegue/docker/*.conf       text eol=lf
+despliegue/docker/*Dockerfile  text eol=lf
+despliegue/docker/estudio-clave-docker text eol=lf

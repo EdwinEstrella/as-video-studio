@@ -1,0 +1,38 @@
+# Lo que NO entra en las imagenes. Lo importante: las claves y los datos de
+# quien construya la imagen no pueden acabar dentro de ella.
+.git
+.gitattributes
+.gitignore
+.atl
+.claude
+.env
+**/.env
+
+# Las claves y los datos de cada instalacion: viven en el volumen /datos
+secretos/
+proyectos/
+banco/
+cache/
+presets.json
+recetas.json
+ajustes.json
+estadisticas.json
+enlaces.json
+coste_global.jsonl
+bitacora_global.jsonl
+
+# Python y Node
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+node_modules/
+**/node_modules/
+despliegue/login/datos/
+*.tmp
+estado.roto.*
+
+# OJO: README.md y docs/ NO se excluyen. El asistente (pasos/asistente.py) los
+# lee en tiempo de ejecucion para contestar.

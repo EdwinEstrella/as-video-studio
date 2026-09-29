@@ -99,8 +99,14 @@ app.get('/api/health', (req, res) => {
 // y DE QUIEN es --, porque cada cuenta tiene su propio proceso de Studio y hay
 // que enrutar al suyo. El nombre viaja en una cabecera que nginx recoge con
 // `auth_request_set`; el cuerpo va vacio a proposito.
+//
+// `?redirigir=1` es para el `forwardAuth` de Traefik (despliegue/docker). Sin
+// sesion, nginx convierte el 401 en un 302 a /login con `error_page`; Traefik
+// no: devuelve al navegador lo que se le conteste aqui, tal cual. Asi que esa
+// redireccion la hace el propio acceso, y el 401 de nginx no cambia.
 app.get('/api/_auth', (req, res) => {
   if (!req.session || !req.session.userId || !req.session.username) {
+    if (req.query.redirigir) return res.redirect(302, '/login');
     return res.status(401).end();
   }
   res.set('X-Studio-User', req.session.username);

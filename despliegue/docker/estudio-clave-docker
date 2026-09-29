@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# -----------------------------------------------------------------------------
+#  estudio-clave — la contraseña de acceso al Estudio, desde la terminal del
+#  contenedor `login` (en Dokploy: la pestaña Terminal de ese servicio).
+#
+#    estudio-clave                    enseña la(s) contraseña(s) guardada(s)
+#    estudio-clave --nueva [cuenta]   pide una contraseña nueva (Intro: la
+#                                     genera) y la deja puesta y guardada
+#
+#  Es el equivalente de despliegue/estudio-clave para contenedores. Aquel
+#  asume un VPS con root, systemd y `sudo -u studio`; aquí no hay nada de eso:
+#  el proceso ya corre como el usuario sin privilegios y con el entorno del
+#  acceso (DATA_DIR, SESSION_SECRET...) puesto por el compose.
+#
+#  LA COPIA de la contraseña queda en $DATA_DIR/clave-<cuenta>.txt (modo 600),
+#  dentro del volumen del acceso. Es la recuperación: quien pueda abrir la
+#  terminal de este contenedor en Dokploy puede leerla. Igual que en el VPS,
+#  tener el panel es tener la llave. La contraseña viaja por la entrada
+#  estándar, no por argumentos: un argumento se ve en la lista de procesos.
+# -----------------------------------------------------------------------------
+set -euo pipefail
+
+APP="${ESTUDIO_LOGIN_APP:-/login}"
+CARPETA="${DATA_DIR:-/login-datos}"
+ALFABETO='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789@#%+=?'
+
+umask 077
+mkdir -p "$CARPETA"
+
+cuentas_guardadas() {
+  local f
+  for f in "$CARPETA"/clave-*.txt; do
+    [ -e "$f" ] || continue
+    f="${f##*/clave-}"
+    echo "${f%.txt}"
+  done
+}
+
+generar() {
+  # Mismo alfabeto que bin/user.js (sin 0/O ni 1/l/I, para poder dictarla). No
+  # con `tr </dev/urandom | head -c 24`: head cierra la tuberia, tr muere de
+  # SIGPIPE y con `pipefail` el script sale con 141 antes de poner nada (es un
+  # fallo medido en despliegue/estudio-clave). Aqui la fuente se acaba sola.
+  local material
+  material="$(openssl rand -base64 256 2>/dev/null \
+              || dd if=/dev/urandom bs=256 count=1 2>/dev/null | base64)"
+  printf '%s' "$material" | LC_ALL=C tr -dc "$ALFABETO" | cut -c1-24
+}
+
+mostrar() {
+  local hay=0 c
+  for c in $(cuentas_guardadas); do
+    hay=1
+    echo
+    echo "  Cuenta     : $c"
+    echo "  Contraseña : $(cat "$CARPETA/clave-$c.txt")"
+  done
+  if [ "$hay" -eq 0 ]; then
+    echo "No hay ninguna contraseña guardada."
+    echo "Ponla con:  estudio-clave --nueva estudio"
+    exit 1
+  fi
+  echo
+  echo "Con ella se entra en el Estudio. Para cambiarla: estudio-clave --nueva"
+}
+
+nueva() {
+  local cuenta="${1:-}" lista pw=""
+  if [ -z "$cuenta" ]; then
+    lista=($(cuentas_guardadas))
+    if [ "${#lista[@]}" -eq 1 ]; then
+      cuenta="${lista[0]}"
+    elif [ "${#lista[@]}" -eq 0 ]; then
+      cuenta="estudio"                     # primera vez: la cuenta de fabrica
+    else
+      echo "Di de qué cuenta:  estudio-clave --nueva <cuenta>"
+      echo "Guardadas: ${lista[*]}"
+      exit 1
+    fi
+  fi
+
+  # Con alguien delante se pregunta; Intro genera una. Sin terminal se genera
+  # sin preguntar.
+  if [ -t 0 ]; then
+    read -rsp "Contraseña nueva para «$cuenta» (Intro para generar una): " pw
+    echo
+    if [ -n "$pw" ] && [ "${#pw}" -lt 12 ]; then
+      echo "Mínimo 12 caracteres. No se ha cambiado nada."
+      exit 1
+    fi
+  fi
+  [ -n "$pw" ] || pw="$(generar)"
+
+  # El hash, a la base de datos, con el mismo entorno que la app.
+  ( cd "$APP" && printf '%s\n' "$pw" | node bin/user.js poner "$cuenta" --password-stdin >/dev/null )
+  printf '%s\n' "$pw" > "$CARPETA/clave-$cuenta.txt"
+  chmod 600 "$CARPETA/clave-$cuenta.txt"
+  echo
+  echo "  Cuenta     : $cuenta"
+  echo "  Contraseña : $pw"
+  echo
+  echo "Ya vale para entrar en el Estudio. Copia en $CARPETA/clave-$cuenta.txt"
+}
+
+case "${1:-}" in
+  "")                mostrar ;;
+  --nueva|nueva)     nueva "${2:-}" ;;
+  -h|--help|help)
+    sed -n '3,8p' "$0" | sed 's/^#  \{0,1\}//'
+    ;;
+  *)
+    echo "No entiendo «$1». Uso: estudio-clave | estudio-clave --nueva [cuenta]"
+    exit 1
+    ;;
+esac

@@ -1,0 +1,145 @@
+# AS Video Studio para Dokploy. Reproduce lo que instalar.sh monta en un VPS
+# —el estudio y el acceso por contraseña— con el Traefik de Dokploy haciendo lo
+# que allí hace nginx. Cómo se despliega y qué variables pide:
+# despliegue/docker/LEEME.md
+#
+# El enrutado va en ETIQUETAS y no en la pestaña Domains de Dokploy: esa pestaña
+# crea un router por dominio y no deja colgarle el `forwardAuth`. Sin él, el
+# estudio abierto a internet es cualquiera gastando tus claves.
+#
+#   /login /api/{csrf,login,logout,me,health} /css/ /js/ /assets/  →  login
+#   todo lo demás → forwardAuth (login, en CADA petición)          →  estudio
+#
+# Los nombres de routers, middlewares y alias van con `asvs-` delante: Traefik y
+# la red dokploy-network son de TODA la máquina, y un `login` a secas chocaría
+# con el de cualquier otro proyecto.
+
+services:
+  estudio:
+    build:
+      context: .
+      dockerfile: despliegue/docker/estudio.Dockerfile
+      args:
+        EXIGIR_FUENTES_MS: ${EXIGIR_FUENTES_MS:-0}
+    restart: unless-stopped
+    expose:
+      - "8110"
+    environment:
+      # Cuántos planos se rasterizan a la vez. Medido en 8 vCPU: con 4 procesos
+      # 6,75 fotogramas/s, con 8 10,40 (CLAUDE.md). Poner el nº de hilos, máx. 16.
+      ESTUDIO_LOTES: ${ESTUDIO_LOTES:-4}
+    volumes:
+      # TODOS los datos, a un sitio FIJO (/datos): los proyectos guardan rutas
+      # absolutas que entran en la firma de cada paso. No cambiar este destino.
+      # Incluye las claves, la sesión del CLI de Claude (HOME=/datos/home) y
+      # reglas.json.
+      - estudio_datos:/datos
+    # Chromium dibuja en /dev/shm; los 64 MB de Docker no aguantan una tanda larga.
+    shm_size: 1gb
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8110), 3)"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - default
+      - dokploy-network
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.services.asvs-estudio.loadbalancer.server.port=8110
+      # Todo lo que no sea del acceso. Prioridad baja: los routers del acceso
+      # tienen que ganar siempre.
+      - "traefik.http.routers.asvs-estudio.rule=Host(`${DOMINIO}`)"
+      - traefik.http.routers.asvs-estudio.priority=1
+      - traefik.http.routers.asvs-estudio.entrypoints=websecure
+      - traefik.http.routers.asvs-estudio.tls.certresolver=letsencrypt
+      - traefik.http.routers.asvs-estudio.service=asvs-estudio
+      - traefik.http.routers.asvs-estudio.middlewares=asvs-auth,asvs-gzip
+      # El `auth_request` de nginx. `redirigir=1`: sin sesión el acceso contesta
+      # él mismo el 302 a /login, porque Traefik devuelve su respuesta tal cual
+      # (nginx la convertía con `error_page`).
+      - traefik.http.middlewares.asvs-auth.forwardauth.address=http://asvs-login:3000/api/_auth?redirigir=1
+      - traefik.http.middlewares.asvs-auth.forwardauth.trustForwardHeader=true
+      # El JSON lo sirve uvicorn, no el disco: sin esto va en claro.
+      - traefik.http.middlewares.asvs-gzip.compress=true
+      # HTTP → HTTPS. Sin certificado la cookie del acceso (secure) no se guarda.
+      - "traefik.http.routers.asvs-http.rule=Host(`${DOMINIO}`)"
+      - traefik.http.routers.asvs-http.entrypoints=web
+      - traefik.http.routers.asvs-http.middlewares=asvs-https
+      - traefik.http.routers.asvs-http.service=asvs-estudio
+      - traefik.http.middlewares.asvs-https.redirectscheme.scheme=https
+      - traefik.http.middlewares.asvs-https.redirectscheme.permanent=true
+
+  login:
+    build:
+      context: .
+      dockerfile: despliegue/docker/login.Dockerfile
+    restart: unless-stopped
+    expose:
+      - "3000"
+    environment:
+      # Dominio público sin esquema (p. ej. estudio.midominio.com). Se usa para
+      # APP_URL y, si no se pone APP_ORIGENES, para la lista de orígenes.
+      APP_URL: https://${DOMINIO:?Falta DOMINIO en la pestaña Environment de Dokploy}
+      # Los nombres por los que se puede entrar (anti-CSRF). La comprobación va
+      # CONTRA ESTA LISTA y no contra el Host de la petición, que lo pone quien
+      # llama. Si sirves también `www.` u otro dominio, añádelo aquí, separado
+      # por comas, o el login dirá «Origen no permitido».
+      APP_ORIGENES: ${APP_ORIGENES:-https://${DOMINIO}}
+      # Firma las sesiones: mínimo 32 caracteres, y si cambia se cierran todas.
+      # Genera uno con: openssl rand -hex 48
+      SESSION_SECRET: ${SESSION_SECRET:?Falta SESSION_SECRET (minimo 32 caracteres)}
+      # Traefik termina el HTTPS, así que la cookie va `secure` (depende de que
+      # llegue X-Forwarded-Proto, que Traefik pone siempre). Solo se baja a false
+      # para probar sin certificado.
+      SECURE_COOKIES: ${SECURE_COOKIES:-true}
+      # Un salto de confianza: Traefik. De él salen la IP real (el limitador de
+      # intentos) y el esquema (la cookie secure).
+      TRUST_PROXY: "1"
+      HOSTINGER_VPS_ID: ${HOSTINGER_VPS_ID:-}
+    volumes:
+      # Sesiones, hashes de contraseña y la copia de recuperación (clave-*.txt).
+      - login_datos:/login-datos
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      default:
+      dokploy-network:
+        # El nombre por el que Traefik llama al forwardAuth. Único en la red
+        # compartida: ver la cabecera del fichero.
+        aliases:
+          - asvs-login
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.services.asvs-login.loadbalancer.server.port=3000
+      - "traefik.http.routers.asvs-login.rule=Host(`${DOMINIO}`) && (Path(`/login`) || Path(`/api/csrf`) || Path(`/api/logout`) || Path(`/api/me`) || Path(`/api/health`) || PathPrefix(`/css/`) || PathPrefix(`/js/`) || PathPrefix(`/assets/`))"
+      - traefik.http.routers.asvs-login.priority=100
+      - traefik.http.routers.asvs-login.entrypoints=websecure
+      - traefik.http.routers.asvs-login.tls.certresolver=letsencrypt
+      - traefik.http.routers.asvs-login.service=asvs-login
+      # El intento de contraseña, aparte: primera barrera de fuerza bruta antes
+      # de llegar a Node (12 por minuto y ráfaga de 5, como en nginx).
+      - "traefik.http.routers.asvs-login-intento.rule=Host(`${DOMINIO}`) && Path(`/api/login`)"
+      - traefik.http.routers.asvs-login-intento.priority=100
+      - traefik.http.routers.asvs-login-intento.entrypoints=websecure
+      - traefik.http.routers.asvs-login-intento.tls.certresolver=letsencrypt
+      - traefik.http.routers.asvs-login-intento.service=asvs-login
+      - traefik.http.routers.asvs-login-intento.middlewares=asvs-intentos
+      - traefik.http.middlewares.asvs-intentos.ratelimit.average=12
+      - traefik.http.middlewares.asvs-intentos.ratelimit.period=1m
+      - traefik.http.middlewares.asvs-intentos.ratelimit.burst=5
+
+networks:
+  dokploy-network:
+    external: true
+
+volumes:
+  estudio_datos:
+  login_datos:
