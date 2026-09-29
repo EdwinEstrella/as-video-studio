@@ -198,18 +198,43 @@ class Intento:
     def arrancar(self):
         motor = _motor()
         cmd = [motor.ruta_agy(), "-p", "ping", "--output-format", "json"]
+        # EN LINUX LA ENTRADA VA POR UN PSEUDO-TERMINAL, no por una tuberia.
+        # MEDIDO en la imagen de Docker: con stdin en tuberia agy cree que le
+        # pasan el prompt por ahi y contesta «authentication required. Run
+        # 'agy' to log in» sin ofrecer enlace; con /dev/null o con un pty SI lo
+        # ofrece. Y el codigo hay que escribirselo despues, asi que /dev/null no
+        # vale. En Windows la tuberia funciona (y no hay pty).
+        self._pty = None
+        esclavo = None
+        entrada = subprocess.PIPE
+        if os.name != "nt":
+            import pty
+            self._pty, esclavo = pty.openpty()
+            entrada = esclavo
         try:
             self.proceso = subprocess.Popen(
-                cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                cmd, stdin=entrada, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 env=motor.entorno_de({"home": self.carpeta}),
                 **SIN_VENTANA)
         except OSError as fallo:
             self.estado = "fallo"
             self.mensaje = f"no se pudo ejecutar agy: {fallo}"
+            self._cerrar_pty()
             return
+        finally:
+            if esclavo is not None:
+                os.close(esclavo)
         threading.Thread(target=self._vigilar, daemon=True).start()
         threading.Thread(target=self._plazos, daemon=True).start()
+
+    def _cerrar_pty(self):
+        if getattr(self, "_pty", None) is not None:
+            try:
+                os.close(self._pty)
+            except OSError:
+                pass
+            self._pty = None
 
     def _vigilar(self):
         proceso = self.proceso
@@ -229,6 +254,7 @@ class Intento:
                         self.enlace_en = time.time()
                         self.estado = "enlace"
         proceso.wait()
+        self._cerrar_pty()
         self._terminar(acumulado, proceso.returncode)
 
     def _terminar(self, salida, codigo):
@@ -283,8 +309,12 @@ class Intento:
             self.estado = "probando"
             self.codigo_en = time.time()
             try:
-                self.proceso.stdin.write((codigo + "\n").encode("utf-8"))
-                self.proceso.stdin.flush()
+                if getattr(self, "_pty", None) is not None:
+                    # un terminal toma el Intro como \r, no como \n
+                    os.write(self._pty, (codigo + "\r").encode("utf-8"))
+                else:
+                    self.proceso.stdin.write((codigo + "\n").encode("utf-8"))
+                    self.proceso.stdin.flush()
             except OSError as fallo:
                 self.estado = "fallo"
                 self.mensaje = f"no se pudo enviar el código: {fallo}"
