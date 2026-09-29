@@ -18,6 +18,8 @@ Tres proveedores y tres unidades distintas:
                 caracteres y el importe marcado como 'sin tarifa'.
     claude_cli  SOLO tokens. Va contra la suscripcion, no contra un contador con
                 precio por llamada, asi que no lleva dolares y no suma al total.
+    agy         imagenes dibujadas con Antigravity ("Google"). Igual que Claude:
+                tokens e imagenes, sin dolares (suscripcion).
 
 Uso:
 
@@ -63,9 +65,9 @@ RUTA_GLOBAL = (os.environ.get("ESTUDIO_COSTE_GLOBAL")
                or os.path.join(RAIZ_ESTUDIO, "coste_global.jsonl"))
 NOMBRE_COSTE = "coste.jsonl"
 
-PROVEEDORES = ("openai", "tts", "claude_cli")
-SIN_DOLARES = ("claude_cli",)            # se miden en tokens y no suman al total
-ETIQUETAS = {"openai": "OpenAI", "tts": "TTS", "claude_cli": "Claude"}
+PROVEEDORES = ("openai", "tts", "claude_cli", "agy")
+SIN_DOLARES = ("claude_cli", "agy")            # se miden en tokens y no suman al total
+ETIQUETAS = {"openai": "OpenAI", "tts": "TTS", "claude_cli": "Claude", "agy": "Google (Antigravity)"}
 
 AVISO_PRESUPUESTO = 0.8                  # fraccion a partir de la cual se avisa
 
@@ -425,12 +427,17 @@ def cabecera(proveedores, total_usd):
     abierto = proveedores.get("openai") or _vacio("openai")
     voz = proveedores.get("tts") or _vacio("tts")
     cli = proveedores.get("claude_cli") or _vacio("claude_cli")
-    return "     ".join([
+    google = proveedores.get("agy") or _vacio("agy")
+    partes = [
         f"OpenAI  {importe(abierto)} · {corto(abierto['tokens']['total'])} tok",
         f"TTS  {importe(voz)} · {corto(voz['cantidad']['caracteres'])} car",
         f"Claude  {corto(cli['tokens']['total'])} tok",
-        f"TOTAL  ${total_usd:.2f}",
-    ])
+    ]
+    if google["eventos"]:                # sin imagenes de Google, la cabecera de siempre
+        partes.append(f"Google  {corto(google['cantidad']['imagenes'])} img · "
+                      f"{corto(google['tokens']['total'])} tok")
+    partes.append(f"TOTAL  ${total_usd:.2f}")
+    return "     ".join(partes)
 
 
 def agregar(registros):
@@ -606,6 +613,27 @@ def reportar_openai(usage, calidad, tamano, imagenes=1, operacion="imagen",
                    usd_estimado=True, detalle=ficha)
 
 
+def reportar_agy(usage, tamano, imagenes=1, operacion="imagen", unidad=None,
+                 detalle=None):
+    """Anota una imagen dibujada por agy (Antigravity) con el `usage` que dio.
+
+    Sin dolares: va contra una suscripcion, igual que Claude (`SIN_DOLARES`).
+    Se anota igual --tokens, imagenes y segundos-- para que las estadisticas y
+    la barra de progreso sigan aprendiendo de lo que tarda y consume cada plano.
+    """
+    usage = usage if isinstance(usage, dict) else {}
+    ficha = {"tamano": tamano}
+    ficha.update(detalle or {})
+    return _anotar("agy", operacion, unidad=unidad,
+                   tokens={"entrada": usage.get("input_tokens"),
+                           # lo que piensa el modelo tambien es salida
+                           "salida": (int(usage.get("output_tokens") or 0)
+                                      + int(usage.get("thinking_tokens") or 0)),
+                           "cache": usage.get("cache_read_tokens")},
+                   cantidad={"imagenes": imagenes},
+                   usd=None, detalle=ficha)
+
+
 def reportar_tts(caracteres, operacion="sintesis", unidad=None, tokens=None,
                  detalle=None):
     """Anota una sintesis con los caracteres que el motor de voz envio de verdad."""
@@ -750,6 +778,17 @@ def _medir_imagen(original):
         meta = meta if isinstance(meta, dict) else {}
         calidad = kwargs.get("quality") or meta.get("quality") or "low"
         tamano = meta.get("tamano") or kwargs.get("tamano") or "apaisado"
+        if meta.get("motor") == "agy":
+            # el motor de Google no cobra por imagen: se anota lo consumido y el
+            # importe es cero. El camino de OpenAI de abajo NO se toca.
+            reportar_agy(meta.get("usage"), tamano,
+                         detalle={"modelo": meta.get("modelo"),
+                                  "refs": meta.get("refs"),
+                                  "segundos": meta.get("segundos"),
+                                  "cuenta": meta.get("cuenta")})
+            meta["coste"] = 0.0
+            meta["coste_estimado"] = False
+            return png, meta
         registro = reportar_openai(meta.get("usage"), calidad, tamano,
                                    detalle={"modelo": meta.get("modelo"),
                                             "refs": meta.get("refs"),
@@ -883,8 +922,9 @@ def _reenganchar(clave, modulo):
     """Vuelve a medir un motor que se acaba de (re)cargar."""
     if os.path.basename(str(clave)).lower() != "imagen.py":
         return
+    etiqueta = "imagen_agy.generar" if "imagen_agy" in str(clave) else "imagen_openai.generar"
     _envolver(modulo, "generar", _medir_imagen,
-              {"enganchado": [], "ausente": []}, "imagen_openai.generar")
+              {"enganchado": [], "ausente": []}, etiqueta)
 
 
 def modulos_de_imagen(pasos=None):
@@ -901,19 +941,22 @@ def modulos_de_imagen(pasos=None):
     modulos = []
     candidatos = [getattr(pasos, "medios", None) if pasos else None,
                   sys.modules.get("medios"), sys.modules.get("pasos.medios")]
+    motores_rel = ("imagen_openai/imagen.py", "imagen_agy/imagen.py")
     for medios in candidatos:
         if medios is None or not hasattr(medios, "motor"):
             continue
-        try:
-            modulo = medios.motor("imagen_openai/imagen.py")
-        except Exception:  # noqa: BLE001
-            continue
-        if modulo not in modulos:
-            modulos.append(modulo)
+        for motor_rel in motores_rel:
+            try:
+                modulo = medios.motor(motor_rel)
+            except Exception:  # noqa: BLE001
+                continue
+            if modulo not in modulos:
+                modulos.append(modulo)
     for modulo in list(sys.modules.values()):
         fichero = getattr(modulo, "__file__", "") or ""
+        fichero_sep = fichero.replace("/", os.sep)
         if os.path.basename(fichero).lower() == "imagen.py" and \
-                "imagen_openai" in fichero.replace("/", os.sep) and \
+                ("imagen_openai" in fichero_sep or "imagen_agy" in fichero_sep) and \
                 modulo not in modulos:
             modulos.append(modulo)
     return modulos

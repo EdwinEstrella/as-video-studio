@@ -876,8 +876,10 @@ def crear_proyecto(cuerpo: dict = Body(default=None)):
     # en la firma de cada imagen --, y eso es dinero. Escrita aqui, lo viejo se
     # queda como estaba y esto es solo el punto de partida del proyecto nuevo.
     try:
-        ctx.estado.actualizar_params("assets",
-                                     {"calidad": AJUSTES.calidad_imagen()})
+        params_assets = {"calidad": AJUSTES.calidad_imagen()}
+        if AJUSTES.motor_imagen() != "openai":
+            params_assets["motor_imagen"] = AJUSTES.motor_imagen()
+        ctx.estado.actualizar_params("assets", params_assets)
     except Exception:  # noqa: BLE001
         # un ajuste ilegible no puede impedir crear un proyecto: se queda con
         # el valor por defecto del paso, que es el que habia antes de todo esto
@@ -2893,11 +2895,17 @@ def servir_lamina_moodboard(clave: str, origen: str, archivo: str,
     return servir_fichero(peticion, destino)
 
 
+def _motor_de_imagen_de(ctx):
+    """El motor de imagen de ESE proyecto: con Google no se llama a OpenAI."""
+    return PASOS_MODULOS.medios.motor_de_imagen(ctx.estado.params("assets") or {})
+
+
 def _correr_moodboard(avisar, ctx, ejes, peticiones, calidad):
     mod = _moodboard()
     rutas, estilo = _referencias_de_estilo(ctx)
     hecho = mod.generar(rutas, estilo, ejes=ejes, peticiones=peticiones,
-                        calidad=calidad, avisar=avisar)
+                        calidad=calidad, avisar=avisar,
+                        motor=_motor_de_imagen_de(ctx))
     ctx.bitacora.anotar("moodboard_generado", "assets", hecho)
     return hecho
 
@@ -6233,6 +6241,150 @@ def salir_cuenta_cli(cid: str):
     return {"ok": ok, "dicho": dicho, "cuentas": _cuentas_cli_para_pantalla(True)}
 
 
+# ------------------------------------------------------------------ agy CLI
+#
+# Las cuentas de Google (Antigravity, `agy`) para dibujar imagenes. Van como las
+# del CLI de Claude --una lista ordenada, cada una con su HOME aislado y su
+# acceso desde la pantalla--, con UNA diferencia que importa: NINGUNA ruta de
+# lectura lanza agy. Lanzarlo es una llamada al modelo y gasta cupo; lo que se
+# ensena es lo que APUNTO el motor la ultima vez que hablo de verdad con la
+# cuenta (`imagen_agy.salud_de`). Solo `probar` habla.
+
+def _login_agy():
+    if PASOS_MODULOS is None:
+        raise ErrorApi(503, f"los pasos no se han podido cargar: {ERROR_PASOS}")
+    return PASOS_MODULOS.login_agy
+
+
+def _motor_agy():
+    if PASOS_MODULOS is None:
+        raise ErrorApi(503, f"los pasos no se han podido cargar: {ERROR_PASOS}")
+    return PASOS_MODULOS.medios.motor("imagen_agy/imagen.py")
+
+
+def _cuenta_agy(cid):
+    """La ficha guardada de una cuenta de Google, o 404."""
+    for cuenta in _claves().cuentas_agy(solo_listas=False):
+        if cuenta["id"] == cid:
+            return cuenta
+    raise ErrorApi(404, f"no hay ninguna cuenta de Google con id '{cid}'")
+
+
+def _estado_agy():
+    """Lo que ve la pantalla. Todo se lee de ficheros y de la memoria."""
+    return _login_agy().estado_para_pantalla()
+
+
+@app.get("/api/claves/agy")
+def leer_estado_agy():
+    """Las cuentas de Google y como respondieron la ultima vez. NO lanza agy."""
+    return _estado_agy()
+
+
+@app.post("/api/claves/agy/{cid}/entrar")
+def entrar_cuenta_agy(cid: str, reiniciar: int = 0):
+    """Arranca el acceso de esa cuenta y devuelve el enlace donde entrar.
+
+    agy da 60 s desde que ensena el enlace: `reiniciar=1` tira el intento y pide
+    uno nuevo, que es lo que hace el boton cuando se acaba la cuenta atras.
+    """
+    modulo, login = _claves(), _login_agy()
+    cuenta = _cuenta_agy(cid)
+    try:
+        carpeta = cuenta["home"] or login.asegurar_carpeta(cid)
+        os.makedirs(carpeta, exist_ok=True)
+        if carpeta != cuenta["home"]:
+            modulo.apuntar_cuenta_agy(cid, home=carpeta)
+        ficha = (login.reiniciar if reiniciar else login.entrar)(cid, carpeta)
+    except modulo.ErrorClaves as fallo:
+        raise ErrorApi(400, str(fallo))
+    except login.ErrorLogin as fallo:
+        raise ErrorApi(409, str(fallo))
+    except OSError as fallo:
+        raise ErrorApi(500, f"no se ha podido preparar la carpeta de la cuenta: {fallo}")
+    anotar_global("agy_entrar", {"cuenta": cid, "estado": ficha["estado"]})
+    return {"intento": ficha, **_estado_agy()}
+
+
+@app.post("/api/claves/agy/{cid}/codigo")
+def codigo_cuenta_agy(cid: str, cuerpo: dict = Body(default=None)):
+    """Le pasa a agy el codigo que devolvio la pagina de acceso de Google."""
+    login = _login_agy()
+    _cuenta_agy(cid)
+    try:
+        ficha = login.pegar(cid, _cuerpo(cuerpo).get("codigo"))
+    except login.ErrorLogin as fallo:
+        raise ErrorApi(409, str(fallo))
+    if ficha["estado"] == "dentro":
+        login.dar_por_dentro(cid)
+    anotar_global("agy_codigo", {"cuenta": cid, "estado": ficha["estado"]})
+    return {"intento": ficha, **_estado_agy()}
+
+
+@app.delete("/api/claves/agy/{cid}/entrar")
+def cancelar_cuenta_agy(cid: str):
+    """Tira el acceso a medias de esa cuenta."""
+    _cuenta_agy(cid)
+    habia = _login_agy().cancelar(cid)
+    return {"cancelado": habia, **_estado_agy()}
+
+
+@app.post("/api/claves/agy/{cid}/probar")
+def probar_cuenta_agy(cid: str):
+    """Le habla a esa cuenta con una llamada minima y apunta como responde.
+
+    Es la UNICA ruta de agy que llama al modelo (gasta un poco de cupo), y solo
+    la pulsa una persona. `defecto` prueba la sesion por defecto de agy, la que
+    se usa mientras no haya ninguna cuenta anadida.
+    """
+    motor = _motor_agy()
+    if cid == "defecto":
+        cuenta = motor.cuenta_por_defecto()
+    else:
+        cuenta = _cuenta_agy(cid)
+        if not cuenta["entrada"]:
+            raise ErrorApi(409, "esta cuenta todavía no tiene sesión: entra primero")
+    ficha = motor.probar(cuenta, para=f"probar la cuenta {motor.nombre_de(cuenta)}")
+    anotar_global("agy_probar", {"cuenta": cid, "estado": (ficha or {}).get("estado")})
+    return {"salud": ficha, **_estado_agy()}
+
+
+@app.post("/api/claves/agy/{cid}/salir")
+def salir_cuenta_agy(cid: str):
+    """Cierra la sesion de esa cuenta (borra su HOME) sin quitarla de la lista."""
+    modulo, login = _claves(), _login_agy()
+    cuenta = _cuenta_agy(cid)
+    login.cancelar(cid)
+    ok, dicho = login.salir(cuenta["home"])
+    modulo.apuntar_cuenta_agy(cid, entrada=False)
+    _motor_agy().olvidar(cid)
+    anotar_global("agy_salir", {"cuenta": cid, "ok": ok})
+    return {"ok": ok, "dicho": dicho, **_estado_agy()}
+
+
+@app.delete("/api/claves/agy/{cid}")
+def quitar_cuenta_agy(cid: str):
+    """Quita la cuenta de la lista Y BORRA su carpeta (su login incluido)."""
+    modulo, login = _claves(), _login_agy()
+    cuenta = _cuenta_agy(cid)
+    login.cancelar(cid)
+    quedan = [{"id": c["id"], "etiqueta": c["etiqueta"], "activa": c["activa"]}
+              for c in modulo.cuentas_agy(solo_listas=False) if c["id"] != cid]
+    try:
+        modulo.guardar({"agy": quedan})
+    except modulo.ErrorClaves as fallo:
+        raise ErrorApi(400, str(fallo))
+    borrada = False
+    if cuenta["home"]:
+        try:
+            borrada = login.borrar_carpeta(cuenta["home"])
+        except login.ErrorLogin:
+            borrada = False
+    _motor_agy().olvidar(cid)
+    anotar_global("agy_quitar", {"cuenta": cid, "carpeta_borrada": borrada})
+    return {"ok": True, "carpeta_borrada": borrada, **_estado_agy()}
+
+
 # ------------------------------------------------------------------ asistente
 #
 # El chat de la burbuja de abajo a la derecha (pasos/asistente.py). Aqui vive lo
@@ -7146,7 +7298,8 @@ def _correr_light_referencias(avisar, ctx, encargo):
     hecho = mod.dibujar_desde_guia({"guia": bloque.get("guia")}, destino,
                                    ejes=pedidos, peticiones=peticiones,
                                    calidad=calidad, avisar=avisar,
-                                   idioma=idioma)
+                                   idioma=idioma,
+                                   motor=_motor_de_imagen_de(ctx))
     # LA LISTA NO SE PISA CUANDO SOLO SE HA REDIBUJADO UNA. Cada lamina se
     # escribe en `<eje>.png`, o sea encima de la que habia, asi que las otras
     # cinco siguen en su sitio y en la lista. Escribir aqui `hecho["rutas"]` a

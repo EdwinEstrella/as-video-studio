@@ -47,6 +47,7 @@ RUTA = os.environ.get("ESTUDIO_AJUSTES") or os.path.join(RAIZ_ESTUDIO,
 
 #: Las calidades que acepta el motor de imagen, de mas barata a mas cara.
 CALIDADES = ("low", "medium", "high")
+MOTORES_IMAGEN = ("openai", "agy")
 
 #: El tamano con el que se generan los planos, y por tanto con el que hay que
 #: mirar la tabla de precios. Es el de `p6_assets` para 16:9.
@@ -62,6 +63,7 @@ TOKENS_ENTRADA_POR_IMAGEN = 5114
 
 POR_DEFECTO = {
     "calidad_imagen": "low",
+    "motor_imagen": "openai",
     # Si ya se ha pasado por la guia de inicio (las tarjetas que piden las
     # claves al entrar por primera vez). Vive aqui y no en el navegador
     # porque es de la instalacion, no de la pantalla: desde el movil no hay
@@ -79,6 +81,8 @@ def leer():
             salida[clave] = valor
     if salida.get("calidad_imagen") not in CALIDADES:
         salida["calidad_imagen"] = POR_DEFECTO["calidad_imagen"]
+    if salida.get("motor_imagen") not in MOTORES_IMAGEN:
+        salida["motor_imagen"] = POR_DEFECTO["motor_imagen"]
     salida["onboarding_visto"] = bool(salida.get("onboarding_visto"))
     return salida
 
@@ -98,6 +102,9 @@ def guardar(cambios):
         if clave == "calidad_imagen" and valor not in CALIDADES:
             raise ValueError(
                 f"calidad {valor!r}: solo {', '.join(CALIDADES)}")
+        if clave == "motor_imagen" and valor not in MOTORES_IMAGEN:
+            raise ValueError(
+                f"motor de imagen {valor!r}: solo {', '.join(MOTORES_IMAGEN)}")
         if clave == "onboarding_visto" and not isinstance(valor, bool):
             raise ValueError("onboarding_visto es verdadero o falso")
         actual[clave] = valor
@@ -108,6 +115,11 @@ def guardar(cambios):
 def calidad_imagen():
     """La calidad con la que arranca un proyecto nuevo."""
     return leer()["calidad_imagen"]
+
+
+def motor_imagen():
+    """El motor de imagen por defecto con el que arranca un proyecto nuevo."""
+    return leer()["motor_imagen"]
 
 
 def coste_por_imagen(calidad, tamano=TAMANO):

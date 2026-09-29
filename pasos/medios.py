@@ -177,6 +177,30 @@ def motor(ruta_relativa):
     return modulo
 
 
+#: Que motor de imagen dibuja para cada valor del param `motor_imagen`. Cualquier
+#: otro valor (`openai`, o `adoptar`, que no genera y solo usa `normalizar`)
+#: es OpenAI: un proyecto que nunca lo fijo tiene que seguir yendo por ahi.
+MOTORES_DE_IMAGEN = {"agy": "imagen_agy/imagen.py"}
+MOTOR_DE_IMAGEN_POR_DEFECTO = "imagen_openai/imagen.py"
+
+
+def ruta_motor_de_imagen(p=None):
+    """La ruta del motor de imagen de unos params de `assets`. -> str"""
+    elegido = p.get("motor_imagen") if isinstance(p, dict) else None
+    return MOTORES_DE_IMAGEN.get(elegido, MOTOR_DE_IMAGEN_POR_DEFECTO)
+
+
+def motor_de_imagen(p=None):
+    """EL motor de imagen de un proyecto, y el unico sitio que lo decide.
+
+    Un proyecto de Google (`motor_imagen == "agy"`) no puede llamar a OpenAI ni
+    por un camino lateral --normalizar una referencia, una lamina de moodboard,
+    una correccion--: ese era el fallo de tenerlo escrito a mano en cada sitio.
+    `p` son los params de `assets` (o cualquier dict con `motor_imagen`).
+    """
+    return motor(ruta_motor_de_imagen(p))
+
+
 class trabajo_en_curso:                            # noqa: N801  (es un with)
     """Mientras dure esto, ningun motor se recarga.
 

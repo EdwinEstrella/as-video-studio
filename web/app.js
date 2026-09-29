@@ -390,6 +390,12 @@ const API = {
   entrarCLI: cid => `${BASE}/api/claves/cli/${encodeURIComponent(cid)}/entrar`,
   codigoCLI: cid => `${BASE}/api/claves/cli/${encodeURIComponent(cid)}/codigo`,
   salirCLI: cid => `${BASE}/api/claves/cli/${encodeURIComponent(cid)}/salir`,
+  estadoAgy: () => `${BASE}/api/claves/agy`,
+  entrarAgy: (cid, reiniciar) => `${BASE}/api/claves/agy/${encodeURIComponent(cid)}/entrar${reiniciar ? '?reiniciar=1' : ''}`,
+  codigoAgy: cid => `${BASE}/api/claves/agy/${encodeURIComponent(cid)}/codigo`,
+  probarAgy: cid => `${BASE}/api/claves/agy/${encodeURIComponent(cid)}/probar`,
+  salirAgy: cid => `${BASE}/api/claves/agy/${encodeURIComponent(cid)}/salir`,
+  quitarAgy: cid => `${BASE}/api/claves/agy/${encodeURIComponent(cid)}`,
   asistente: () => `${BASE}/api/asistente`,
   charlas: () => `${BASE}/api/asistente/charlas`,
   charla: cid => `${BASE}/api/asistente/charlas/${encodeURIComponent(cid)}`,
@@ -2191,7 +2197,7 @@ function conmutarConfig(abrir) {
   if (quiero) cargarClaves().then(repintarClaves);
   /* Al cerrar el cajón se para el latido: un sondeo que sigue corriendo detrás
      de una pantalla que nadie mira es una llamada por segundo para siempre. */
-  if (!quiero) estadoConfig().latiendo = false;
+  if (!quiero) { estadoConfig().latiendo = false; estadoConfig().latiendoAgy = false; }
 }
 
 async function cargarClaves() {
@@ -2207,6 +2213,7 @@ async function cargarClaves() {
     vista.cargando = false;
   }
   cargarCuentasCLI();
+  cargarEstadoAgy();
   cargarAjustes();
   return vista.ficha;
 }
@@ -2224,6 +2231,81 @@ async function cargarCuentasCLI(refrescar) {
   repintarClaves();
   latirCLI();
   return vista.cli;
+}
+
+/* LAS CUENTAS DE GOOGLE (agy) para dibujar imágenes.
+
+   Como las del CLI de Claude —una lista ordenada, cada una con su HOME y su
+   acceso desde la pantalla— con una diferencia que manda: NADA de lo que se
+   pide aquí lanza agy. Lanzarlo es una llamada al modelo y gasta cupo, y esto
+   se pide al abrir la app, al abrir Configuración y cada segundo mientras se
+   espera un código. Lo que se pinta es lo que APUNTÓ el motor la última vez que
+   habló de verdad con la cuenta (`salud`); sólo «Probar» habla. */
+const ACCESO_AGY_VIVO = ['abriendo', 'enlace', 'probando'];
+
+function agyAcceso(cuenta) {
+  return !!(cuenta.intento && ACCESO_AGY_VIVO.includes(cuenta.intento.estado));
+}
+
+async function cargarEstadoAgy() {
+  const vista = estadoConfig();
+  try {
+    vista.agy = await pedir(API.estadoAgy());
+  } catch (e) {
+    /* un servidor sin la parte de Google: se dice y el resto sigue */
+    vista.agy = { cuentas: [], error: e.message, instalado: true, max: 6 };
+  }
+  repintarClaves();
+  latirAgy();
+  return vista.agy;
+}
+
+/* Lo que obliga a repintar la pantalla ENTERA. El resto de segundos —la cuenta
+   atrás— sólo cambia un número: repintar todo cada segundo le quitaría el
+   foco al campo donde se está pegando el código. */
+function firmaAccesosAgy(agy) {
+  return ((agy && agy.cuentas) || []).map(c => {
+    const i = c.intento;
+    return [c.id, c.guardada, c.activa, (c.salud || {}).estado || '',
+      i ? `${i.estado}|${i.enlace}|${i.mensaje}` : ''].join(':');
+  }).join(';');
+}
+
+function pintarCuentaAtrasAgy() {
+  const agy = estadoConfig().agy;
+  if (!agy) return;
+  document.querySelectorAll('.agy-cuenta-atras').forEach(nodo => {
+    const cuenta = (agy.cuentas || []).find(c => c.id === nodo.dataset.agy);
+    const restan = cuenta && cuenta.intento ? cuenta.intento.restan_s : null;
+    if (restan === null || restan === undefined) return;
+    nodo.textContent = restan > 0 ? `${restan} s` : 'se acabó el tiempo';
+    nodo.classList.toggle('poco', restan > 0 && restan <= 15);
+    nodo.classList.toggle('agotado', restan <= 0);
+  });
+}
+
+/* Mientras haya un acceso a medias se vuelve a preguntar cada segundo (sólo
+   lee el intento en memoria del servidor). Sin ninguno, el latido se para. */
+function latirAgy() {
+  const vista = estadoConfig();
+  const vivo = ((vista.agy && vista.agy.cuentas) || []).some(agyAcceso);
+  if (!vivo || vista.latiendoAgy) { if (!vivo) vista.latiendoAgy = false; return; }
+  vista.latiendoAgy = true;
+  const tic = async () => {
+    const v = estadoConfig();
+    const cajon = $('#config');
+    if (!v.latiendoAgy || (!INICIO.abierta && (!cajon || cajon.classList.contains('plegado')))) {
+      v.latiendoAgy = false; return;
+    }
+    const antes = firmaAccesosAgy(v.agy);
+    try { v.agy = await pedir(API.estadoAgy()); } catch (e) { /* se reintenta */ }
+    if (firmaAccesosAgy(v.agy) !== antes) repintarClaves();
+    else pintarCuentaAtrasAgy();
+    const sigue = ((v.agy && v.agy.cuentas) || []).some(agyAcceso);
+    if (sigue && v.latiendoAgy) setTimeout(tic, 1000);
+    else v.latiendoAgy = false;
+  };
+  setTimeout(tic, 1000);
 }
 
 /* EL ESTADO DE UN ACCESO VIVE EN EL SERVIDOR, no aquí: recargar la página o
@@ -2278,6 +2360,7 @@ function pintarConfig() {
   }
   caja.appendChild(bloquePruebaClaves());
   caja.appendChild(seccionOpenAI(ficha));
+  caja.appendChild(seccionAgy());
   caja.appendChild(seccionCalidadImagen());
   caja.appendChild(seccionCartesia(ficha));
   caja.appendChild(seccionCLI());
@@ -2315,6 +2398,362 @@ async function guardarCalidadImagen(calidad) {
     vista.error = e.message;
   }
   repintarClaves();
+}
+
+
+async function guardarMotorImagen(motor) {
+  const vista = estadoConfig();
+  try {
+    const r = await pedir(API.ajustes(),
+                          { method: 'PUT', cuerpo: { motor_imagen: motor } });
+    vista.ajustes = { ...(vista.ajustes || {}), ajustes: r.ajustes, costes: r.costes };
+  } catch (e) {
+    vista.error = e.message;
+  }
+  repintarClaves();
+}
+
+
+/* GOOGLE (agy) EN CONFIGURACIÓN: las cuentas en orden, con su salud.
+ *
+ * Mandan POR ORDEN, como las de Claude: la primera se usa siempre y las de
+ * abajo entran cuando la de arriba falla —sin cupo, saturada, sesión
+ * caducada—, y la imagen que estaba en marcha se reintenta con la siguiente.
+ * El motor por defecto es un AJUSTE para los vídeos NUEVOS: no toca ninguno de
+ * los que ya existen (cambiarlo movería la firma de cada imagen ya pagada). */
+function seccionAgy() {
+  const vista = estadoConfig();
+  const agy = vista.agy;
+  const cuentas = (agy && agy.cuentas) || [];
+  const dentro = cuentas.filter(c => c.guardada && c.activa).length;
+  const motorActual = ((vista.ajustes && vista.ajustes.ajustes) || {}).motor_imagen || 'openai';
+
+  const caja = h('section', { clase: 'bloque-config' },
+    h('div', { clase: 'fila' },
+      h('h3', {}, 'Google (Antigravity) — imágenes'),
+      h('span', { clase: 'crece' }),
+      pastillaEstado(dentro ? 'ok' : '',
+        !agy ? 'mirando…' : (dentro ? `${dentro} con sesión` : 'sin cuentas'))),
+    h('div', { clase: 'pista' },
+      'Dibuja los planos con tu suscripción de Antigravity, sin coste por imagen. '
+      + 'Aquí no va una clave: va una CUENTA de Google, cada una con su sesión '
+      + 'aparte. Se recorta al lienzo (1536×1024) y se escala.'),
+    h('div', { clase: 'pista' },
+      'Mandan POR ORDEN: la primera se usa siempre y las de abajo entran cuando la '
+      + 'de arriba se queda sin cupo, está saturada o tiene la sesión caducada. '
+      + 'Una sin cupo se aparta unas 5 horas (o lo que diga Google), una saturada '
+      + '45 s, y una con la sesión caducada hasta que vuelvas a entrar.'),
+    h('div', { clase: 'pista' },
+      'Ojo: automatizar tu propia sesión de Antigravity puede ir contra las '
+      + 'condiciones de uso de Google. Es tu cuenta y tu decisión.'));
+
+  if (!agy) {
+    caja.appendChild(h('div', { clase: 'cargando' }, 'mirando las cuentas…'));
+    return caja;
+  }
+  if (agy.error) caja.appendChild(h('div', { clase: 'vacio' }, agy.error));
+  if (agy.instalado === false) {
+    caja.appendChild(h('div', { clase: 'caja-aviso' },
+      'No encuentro agy en este servidor. Instálalo (antigravity.google/cli) o '
+      + 'fija su ruta con ESTUDIO_AGY.'));
+  }
+
+  cuentas.forEach((cuenta, indice) => caja.appendChild(
+    tarjetaCuentaAgy(cuenta, indice, cuentas)));
+
+  if (!cuentas.length) {
+    /* sin ninguna cuenta se usa la sesión que agy tenga abierta en la máquina */
+    const defecto = agy.defecto;
+    caja.appendChild(h('div', { clase: 'cli-cuenta' },
+      h('div', { clase: 'fila' },
+        h('span', { clase: 'meta crece' },
+          'Sin cuentas añadidas: se usa la sesión que agy tenga abierta en esta máquina.'),
+        pastillaSalud(defecto),
+        h('button', {
+          clase: 'mini fantasma', disabled: vista.probandoAgy === 'defecto',
+          title: 'Le habla a agy con una llamada mínima (gasta un poco de cupo)',
+          onclick: () => probarCuentaAgy('defecto'),
+        }, vista.probandoAgy === 'defecto' ? 'probando…' : 'Probar')),
+      avisoSalud(defecto)));
+  }
+
+  if (cuentas.length < (agy.max || 6)) {
+    const nueva = h('input', { type: 'text', placeholder: 'correo@de-la-cuenta.com' });
+    caja.appendChild(h('div', { clase: 'fila-clave nueva' }, nueva,
+      h('button', {
+        clase: 'mini primario',
+        onclick: () => guardarCuentasAgy(pedirCuentasAgy(cuentas)
+          .concat([{ etiqueta: nueva.value.trim() }])),
+      }, 'Añadir cuenta')));
+  }
+
+  caja.appendChild(h('div', { clase: 'fila' },
+    h('span', { clase: 'meta' }, 'Motor por defecto para los vídeos NUEVOS:'),
+    h('span', { clase: 'crece' }),
+    h('button', {
+      clase: 'mini' + (motorActual === 'agy' ? ' primario' : ' fantasma'),
+      onclick: () => guardarMotorImagen('agy'),
+    }, 'Google (agy)'),
+    h('button', {
+      clase: 'mini' + (motorActual === 'openai' ? ' primario' : ' fantasma'),
+      onclick: () => guardarMotorImagen('openai'),
+    }, 'OpenAI (API)')));
+  caja.appendChild(h('div', { clase: 'meta' },
+    'Es sólo el punto de partida de los vídeos nuevos: los que ya existen siguen '
+    + 'con el motor con el que se hicieron.'));
+  return caja;
+}
+
+/* Lo que se le manda al servidor: id, nombre, activa y el ORDEN. La carpeta y la
+   marca de «tiene sesión» son del servidor, no de la pantalla. */
+function pedirCuentasAgy(cuentas) {
+  return cuentas.map(c => ({ id: c.id, etiqueta: c.etiqueta, activa: c.activa }));
+}
+
+function tarjetaCuentaAgy(cuenta, indice, cuentas) {
+  const abierto = agyAcceso(cuenta);
+  const salud = cuenta.salud;
+  const caducada = !!(salud && salud.estado === 'sesion');
+  const probando = estadoConfig().probandoAgy === cuenta.id;
+  const orden = h('div', { clase: 'cli-orden' },
+    h('span', { clase: 'cli-puesto' }, cuenta.manda ? 'manda' : `${indice + 1}.ª`),
+    h('button', {
+      clase: 'mini fantasma', title: 'Subir: la de arriba se usa antes',
+      disabled: indice === 0,
+      onclick: () => moverCuentaAgy(cuentas, indice, -1),
+    }, '↑'),
+    h('button', {
+      clase: 'mini fantasma', title: 'Bajar',
+      disabled: indice >= cuentas.length - 1,
+      onclick: () => moverCuentaAgy(cuentas, indice, 1),
+    }, '↓'));
+
+  const etiqueta = h('input', {
+    type: 'text', value: cuenta.etiqueta,
+    title: 'Un nombre para ti: es el que sale en los avisos cuando esta cuenta falla',
+    placeholder: 'ponle un nombre: «la mía», «la del curro»…',
+    /* autoguardado al salir del campo */
+    onchange: () => guardarCuentasAgy(pedirCuentasAgy(cuentas).map(
+      (c, i) => (i === indice ? { ...c, etiqueta: etiqueta.value.trim() } : c))),
+  });
+
+  const estado = !cuenta.guardada ? pastillaEstado('error', 'sin sesión')
+    : (!cuenta.activa ? pastillaEstado('', 'desactivada')
+      : pastillaEstado('ok', 'con sesión'));
+  const tarjeta = h('div', { clase: 'cli-cuenta' + (cuenta.manda ? ' manda' : '') },
+    h('div', { clase: 'fila' }, orden, etiqueta, estado,
+      cuenta.guardada ? pastillaSalud(salud) : null,
+      h('span', { clase: 'crece' }),
+      cuenta.guardada ? h('button', {
+        clase: 'mini fantasma', disabled: abierto || probando,
+        title: 'Le habla con una llamada mínima (gasta un poco de cupo): es lo que '
+          + 'distingue «con sesión» de «funciona»',
+        onclick: () => probarCuentaAgy(cuenta.id),
+      }, probando ? 'probando…' : 'Probar') : null,
+      (!cuenta.guardada || caducada) ? h('button', {
+        clase: 'mini primario', disabled: abierto,
+        onclick: () => entrarCuentaAgy(cuenta.id),
+      }, caducada ? 'Entrar otra vez' : 'Entrar') : null,
+      cuenta.guardada ? h('button', {
+        clase: 'mini fantasma',
+        title: cuenta.activa ? 'Dejarla fuera del reparto sin quitarla'
+          : 'Volver a meterla en el reparto',
+        onclick: () => guardarCuentasAgy(pedirCuentasAgy(cuentas).map(
+          (c, i) => (i === indice ? { ...c, activa: !c.activa } : c))),
+      }, cuenta.activa ? 'Desactivar' : 'Activar') : null,
+      cuenta.guardada ? h('button', {
+        clase: 'mini fantasma', title: 'Cerrar la sesión de esta cuenta (borra su carpeta)',
+        onclick: () => salirCuentaAgy(cuenta),
+      }, 'Salir') : null,
+      h('button', {
+        clase: 'mini fantasma', title: 'Quitar esta cuenta y borrar su carpeta',
+        onclick: () => quitarCuentaAgy(cuenta),
+      }, '×')));
+
+  if (cuenta.guardada) {
+    const aviso = avisoSalud(salud);
+    if (aviso) tarjeta.appendChild(aviso);
+    if (cuenta.apartada_s > 0) {
+      tarjeta.appendChild(h('div', { clase: 'meta aviso' },
+        `Apartada del reparto ${cuenta.apartada_s >= 90
+          ? `${Math.round(cuenta.apartada_s / 60)} min` : `${cuenta.apartada_s} s`} más: `
+        + 'mientras tanto se usan las siguientes.'));
+    }
+  }
+  if (cuenta.intento && cuenta.intento.estado !== 'dentro') {
+    tarjeta.appendChild(pasoDelAccesoAgy(cuenta, cuenta.intento, false));
+  }
+  return tarjeta;
+}
+
+/* EL ACCESO, con la ventana de 60 s a la vista. agy espera el código UN minuto
+   desde que enseña el enlace y luego se rinde: sin la cuenta atrás, el que
+   tarda en abrir el enlace pega un código que ya no vale. `auto` (la guía) manda
+   el código en cuanto se pega. */
+function pasoDelAccesoAgy(cuenta, intento, auto) {
+  const vista = estadoConfig();
+  const clave = `agy:${cuenta.id}`;
+  if (intento.estado === 'abriendo') {
+    return h('div', { clase: 'cli-acceso' },
+      h('div', { clase: 'cargando' }, 'pidiéndole el enlace a agy…'));
+  }
+  if (intento.estado === 'fallo') {
+    return h('div', { clase: 'cli-acceso mal' },
+      h('div', { clase: 'meta' }, intento.mensaje || 'no se ha podido entrar'),
+      h('div', { clase: 'fila' },
+        h('button', { clase: 'mini primario', onclick: () => entrarCuentaAgy(cuenta.id, true) },
+          'Pedir otro enlace')));
+  }
+  const caja = h('textarea', {
+    rows: 2, placeholder: 'pega aquí el código de autorización',
+    value: vista.codigos[clave] || '',
+    disabled: intento.estado === 'probando',
+    oninput: e => { vista.codigos[clave] = e.target.value; },
+  });
+  const mandar = () => mandarCodigoAgy(cuenta.id, caja.value.trim());
+  if (auto) {
+    /* al PEGAR se manda solo: el evento llega antes de que el texto esté en el
+       campo, así que se espera al siguiente tic */
+    caja.addEventListener('paste', () => setTimeout(mandar, 0));
+    caja.addEventListener('keydown', ev => {
+      if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); mandar(); }
+    });
+  }
+  const restan = intento.restan_s;
+  return h('div', { clase: 'cli-acceso' },
+    h('a', { clase: auto ? 'cli-enlace grande' : 'cli-enlace', href: intento.enlace,
+      target: '_blank', rel: 'noopener noreferrer' }, '1 · Abrir la página de acceso de Google'),
+    h('div', { clase: 'meta' },
+      'Entra con la cuenta que quieras usar (vale desde el móvil) y copia el código '
+      + 'que te dé la página.'),
+    h('div', { clase: 'meta' },
+      'Tienes ',
+      h('span', {
+        clase: 'agy-cuenta-atras' + (restan <= 0 ? ' agotado' : (restan <= 15 ? ' poco' : '')),
+        datos: { agy: cuenta.id },
+      }, restan > 0 ? `${restan} s` : 'se acabó el tiempo'),
+      ' para pegarlo: agy se rinde a los 60 s. Si se acaba, pide otro enlace.'),
+    h('div', { clase: 'meta' }, '2 · Pega el código entero:'),
+    caja,
+    intento.mensaje ? h('div', { clase: 'meta aviso' }, intento.mensaje) : null,
+    intento.estado === 'probando' ? h('div', { clase: 'cargando' }, 'comprobando el código…') : null,
+    h('div', { clase: 'fila' },
+      h('button', { clase: 'mini primario', disabled: intento.estado === 'probando', onclick: mandar },
+        intento.estado === 'probando' ? 'comprobando…' : 'Entrar con este código'),
+      h('button', {
+        clase: 'mini fantasma',
+        onclick: () => { navigator.clipboard.writeText(intento.enlace)
+          .then(() => toast('enlace copiado'), () => toast('no se ha podido copiar', true)); },
+      }, 'Copiar el enlace'),
+      h('button', { clase: 'mini fantasma', onclick: () => entrarCuentaAgy(cuenta.id, true) },
+        'Pedir otro enlace'),
+      h('button', { clase: 'mini fantasma', onclick: () => cancelarCuentaAgy(cuenta.id) },
+        'Dejarlo')));
+}
+
+function moverCuentaAgy(cuentas, indice, salto) {
+  const lista = pedirCuentasAgy(cuentas);
+  const destino = indice + salto;
+  if (destino < 0 || destino >= lista.length) return;
+  const [movida] = lista.splice(indice, 1);
+  lista.splice(destino, 0, movida);
+  guardarCuentasAgy(lista);
+}
+
+async function guardarCuentasAgy(cuentas) {
+  try {
+    estadoConfig().ficha = await pedir(API.claves(), {
+      method: 'PUT', cuerpo: { agy: { cuentas } },
+    });
+    await cargarEstadoAgy();
+    toast('cuentas guardadas');
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+/* `reiniciar` tira el intento vivo y pide un enlace nuevo: es lo que se hace
+   cuando se acaban los 60 s. */
+async function entrarCuentaAgy(cid, reiniciar) {
+  try {
+    estadoConfig().agy = await pedir(API.entrarAgy(cid, reiniciar), { method: 'POST' });
+    estadoConfig().codigos[`agy:${cid}`] = '';
+    repintarClaves();
+    latirAgy();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+async function mandarCodigoAgy(cid, codigo) {
+  if (!codigo) { toast('pega el código que te ha dado la página', true); return; }
+  const vista = estadoConfig();
+  try {
+    const r = await pedir(API.codigoAgy(cid), { method: 'POST', cuerpo: { codigo } });
+    vista.agy = r;
+    if (r.intento && r.intento.estado === 'dentro') {
+      vista.codigos[`agy:${cid}`] = '';
+      toast('cuenta dentro');
+    }
+    repintarClaves();
+    latirAgy();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+async function cancelarCuentaAgy(cid) {
+  try {
+    estadoConfig().agy = await pedir(API.entrarAgy(cid), { method: 'DELETE' });
+    estadoConfig().codigos[`agy:${cid}`] = '';
+    repintarClaves();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+/* «Probar» es la ÚNICA llamada de verdad a agy: gasta un poco de cupo. */
+async function probarCuentaAgy(cid) {
+  const vista = estadoConfig();
+  vista.probandoAgy = cid;
+  repintarClaves();
+  try {
+    const r = await pedir(API.probarAgy(cid), { method: 'POST' });
+    vista.agy = r;
+    const salud = r.salud || {};
+    if (salud.estado === 'ok') toast('la cuenta contesta');
+    else toast(salud.mensaje || 'la cuenta no contesta', true);
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    vista.probandoAgy = '';
+  }
+  repintarClaves();
+}
+
+async function salirCuentaAgy(cuenta) {
+  if (!window.confirm(`¿Cerrar la sesión de ${cuenta.etiqueta || 'esta cuenta'}? Se borra `
+    + 'su carpeta y habrá que volver a entrar para poder usarla.')) return;
+  try {
+    estadoConfig().agy = await pedir(API.salirAgy(cuenta.id), { method: 'POST' });
+    repintarClaves();
+    toast('sesión cerrada');
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+async function quitarCuentaAgy(cuenta) {
+  if (!window.confirm(`¿Quitar ${cuenta.etiqueta || 'esta cuenta'} de la lista? Se borra su `
+    + 'carpeta, con su sesión: para volver a usarla habrá que entrar de nuevo.')) return;
+  try {
+    estadoConfig().agy = await pedir(API.quitarAgy(cuenta.id), { method: 'DELETE' });
+    estadoConfig().ficha = await pedir(API.claves());
+    repintarClaves();
+    toast('cuenta quitada');
+  } catch (e) {
+    toast(e.message, true);
+  }
 }
 
 
@@ -2609,6 +3048,7 @@ const SALUD_PASTILLA = {
   cupo: ['error', 'sin cupo'],
   sesion: ['error', 'sesión caducada'],
   tiempo: ['parcial', 'no contesta'],
+  capacidad: ['parcial', 'saturada'],
   error: ['error', 'falla'],
 };
 
@@ -2654,6 +3094,7 @@ async function probarCuentaCLI(cid) {
 const NOMBRES_PROVEEDOR = {
   openai: 'OpenAI — imágenes', cartesia: 'Cartesia — voz', jamendo: 'Jamendo — música',
   freesound: 'FreeSound — efectos', claude: 'Claude',
+  agy: 'Google (Antigravity) — imágenes',
 };
 
 function bloquePruebaClaves() {
@@ -2703,6 +3144,7 @@ async function probarTodasLasClaves() {
     vista.probandoTodas = false;
   }
   cargarCuentasCLI();
+  cargarEstadoAgy();
   refrescarEstadoAsistente();
   repintarClaves();
 }
@@ -3729,6 +4171,14 @@ function pintarCoste() {
   nodo.appendChild(h('span', { clase: 'prov' }, h('b', {}, 'Claude'),
     h('span', { clase: 'meta', title: 'va contra la suscripción: no suma al total' },
       `${corto(cli.tokens.total)} tok`)));
+  // Google (Antigravity) va por suscripcion: sin importe y fuera del TOTAL. Solo
+  // sale cuando ya ha dibujado algo, para no ensuciar la cabecera de quien no lo usa
+  const goo = proveedorDe(datos, 'agy');
+  if (goo.eventos) {
+    nodo.appendChild(h('span', { clase: 'prov' }, h('b', {}, 'Google'),
+      h('span', { clase: 'meta', title: 'va contra la suscripción: no suma al total' },
+        `${corto(goo.cantidad.imagenes)} img`)));
+  }
   nodo.appendChild(h('span', { clase: 'prov total' }, h('b', {}, 'TOTAL'),
     h('span', { clase: 'usd' }, `$${Number(datos.total_usd || 0).toFixed(2)}`)));
 
@@ -10406,7 +10856,9 @@ function campoArea(etiqueta, valor, alCambiar, pista, foco) {
 
 /* `proveedor`: qué pestaña de la tarjeta de imágenes se está mirando. Es SOLO
    de la pantalla: no se guarda en ningún sitio ni entra en ningún proyecto. */
-const INICIO = { abierta: false, paso: 0, arrancando: false, accesoFallido: '', proveedor: 'openai' };
+const INICIO = { abierta: false, paso: 0, arrancando: false, accesoFallido: '', proveedor: 'openai',
+  /* la pestaña de imágenes ya la eligió la persona: no se pisa con el ajuste */
+  proveedorElegido: false, arrancandoAgy: false, accesoAgyFallido: '' };
 
 /* Las paradas de la guía. Cada una pinta su cuerpo con lo que haya cargado en
    `estadoConfig()` (las claves y las cuentas del CLI, que son las mismas que
@@ -10446,11 +10898,25 @@ function claudeConectadoInicio() {
     || !!(ASISTENTE.estado && ASISTENTE.estado.listo);
 }
 
+/* Google cuenta como «imágenes hechas» con al menos UNA cuenta con sesión y
+   activa a la que la última llamada no le haya dicho que la sesión caducó. El
+   cupo agotado no la descuenta: vuelve solo, y la sesión sigue siendo buena. */
+function agyConectadoInicio() {
+  const cuentas = (estadoConfig().agy && estadoConfig().agy.cuentas) || [];
+  return cuentas.some(c => c.guardada && c.activa
+    && !(c.salud && c.salud.estado === 'sesion'));
+}
+
+function imagenesListasInicio() {
+  const ficha = estadoConfig().ficha || {};
+  return !!(ficha.openai && ficha.openai.length) || agyConectadoInicio();
+}
+
 function pasosPendientesInicio() {
   const ficha = estadoConfig().ficha || {};
   const hecho = {
     claude: claudeConectadoInicio(),
-    openai: !!(ficha.openai && ficha.openai.length),
+    openai: imagenesListasInicio(),
     cartesia: !!(ficha.cartesia && ficha.cartesia.puesta),
     jamendo: !!(ficha.jamendo && ficha.jamendo.puesta),
     freesound: !!(ficha.freesound && ficha.freesound.puesta),
@@ -10467,6 +10933,7 @@ async function retomarInicio() {
   const vista = estadoConfig();
   if (!vista.ficha) await cargarClaves().catch(() => {});
   if (!vista.cli) await cargarCuentasCLI();
+  if (!vista.agy) await cargarEstadoAgy();
   const { necesarios, opcionales } = pasosPendientesInicio();
   const id = necesarios[0] || opcionales[0];
   abrirInicio(id ? TARJETAS_INICIO.findIndex(t => t.id === id) : 0);
@@ -10480,7 +10947,9 @@ function actualizarBotonGuia() {
   const boton = $('#btn-guia');
   if (!boton) return;
   const vista = estadoConfig();
-  if (!vista.ficha || !vista.cli) { boton.classList.add('oculto'); return; }
+  // sin saber lo de Google el paso de imágenes parecería pendiente y el botón
+  // saldría un momento sin motivo
+  if (!vista.ficha || !vista.cli || !vista.agy) { boton.classList.add('oculto'); return; }
   const { necesarios } = pasosPendientesInicio();
   boton.textContent = necesarios.length === 1
     ? 'Completar configuración (falta 1)'
@@ -10591,7 +11060,7 @@ function tarjetaBienvenidaInicio() {
     h('ol', { clase: 'inicio-pasos' },
       h('li', {}, h('b', {}, 'Claude'), ': tu cuenta, no una clave. Escribe el guion, el '
         + 'catálogo visual y los rótulos, y mueve al asistente de la burbuja.'),
-      h('li', {}, h('b', {}, 'OpenAI'), ': con ella se dibujan los planos.'),
+      h('li', {}, h('b', {}, 'OpenAI o Google'), ': con una de las dos se dibujan los planos.'),
       h('li', {}, h('b', {}, 'Cartesia'), ': la voz que narra.'),
       h('li', {}, h('b', {}, 'Jamendo y FreeSound'), ': música y efectos. Son las dos únicas que se '
         + 'pueden dejar para luego; las otras tres hacen falta.')),
@@ -10772,31 +11241,153 @@ function pasoDelAccesoGuia(cuenta, intento) {
 
 /* La tarjeta de las imágenes: se elige con qué se dibujan los planos. El id de
    la parada sigue siendo 'openai' porque es lo que mira `pasosPendientesInicio`:
-   hoy sólo OpenAI deja el paso hecho. */
+   el paso queda hecho con la clave de OpenAI O con una cuenta de Google.
+
+   ELEGIR UNA PESTAÑA ES ELEGIR EL MOTOR de los vídeos NUEVOS: se guarda como
+   ajuste (`motor_imagen`) y nada más. No toca ningún proyecto que ya exista —
+   cambiarlo ahí movería la firma de cada imagen ya pagada. */
+function elegirProveedorImagenes(id) {
+  INICIO.proveedor = id;
+  INICIO.proveedorElegido = true;
+  pintarInicio();
+  guardarMotorImagen(id === 'google' ? 'agy' : 'openai');
+}
+
 function tarjetaImagenesInicio() {
+  // sin haber elegido nada, la pestaña que se ve es la del ajuste guardado
+  if (!INICIO.proveedorElegido) {
+    const motor = ((estadoConfig().ajustes || {}).ajustes || {}).motor_imagen;
+    if (motor) INICIO.proveedor = motor === 'agy' ? 'google' : 'openai';
+  }
   const eleccion = h('div', { clase: 'inicio-proveedor' },
     [['openai', 'OpenAI'], ['google', 'Google']].map(([id, nombre]) => h('button', {
       clase: INICIO.proveedor === id ? 'activo' : '',
       'aria-pressed': String(INICIO.proveedor === id),
-      onclick: () => { INICIO.proveedor = id; pintarInicio(); },
+      onclick: () => elegirProveedorImagenes(id),
     }, nombre)));
   return [eleccion].concat(INICIO.proveedor === 'google'
     ? tarjetaGoogleInicio() : tarjetaOpenAIInicio());
 }
 
-/* GOOGLE TODAVÍA NO DIBUJA NADA: el motor no existe. La opción se enseña para
-   que se vea que viene, pero no llama a ninguna ruta ni guarda nada — una
-   pantalla que ofrece lo que el motor no sirve acaba llamando a una ruta que no
-   existe (CLAUDE.md, «Lo que NO hay»). Cuando llegue el motor, aquí va su acceso. */
+/* GOOGLE (Antigravity): las imágenes se dibujan con tu suscripción, sin coste
+   por imagen. Como en la tarjeta de Claude: una cuenta, la primera de la lista;
+   la cadena de cuentas de respaldo sigue en Configuración.
+
+   AQUÍ EL ACCESO NO ARRANCA SOLO al abrir la tarjeta, a diferencia del de
+   Claude: agy da 60 s desde que enseña el enlace, y con el reloj corriendo
+   antes de que nadie lo haya pedido se llega tarde. Se pulsa «Entrar con Google»,
+   y desde ahí hay cuenta atrás y «Pedir otro enlace». */
+function cuentaAgyDeLaGuia() {
+  const cuentas = ((estadoConfig().agy || {}).cuentas) || [];
+  return cuentas[0] || null;
+}
+
 function tarjetaGoogleInicio() {
-  return [
+  const agy = estadoConfig().agy;
+  const partes = [
     h('div', { clase: 'pista' },
-      'Con Google (Gemini) los planos se dibujarían con tu cuenta de Google en vez '
-      + 'de con una clave de pago.'),
-    h('div', { clase: 'caja-aviso' },
-      'Todavía no está disponible en este Estudio. Por ahora las imágenes se '
-      + 'hacen con OpenAI: elige OpenAI para seguir.'),
+      'Con Google los planos se dibujan con tu suscripción de Antigravity, sin '
+      + 'coste por imagen. Aquí no va una clave: va tu cuenta de Google. Los vídeos '
+      + 'NUEVOS se harán con Google; los que ya existen no cambian.'),
+    h('div', { clase: 'meta' },
+      'Automatizar tu propia sesión de Antigravity puede ir contra las condiciones '
+      + 'de uso de Google: es tu cuenta y tu decisión.'),
   ];
+  if (!agy) {
+    partes.push(h('div', { clase: 'cargando' }, 'mirando la cuenta…'));
+    return partes;
+  }
+  if (agy.error) partes.push(h('div', { clase: 'caja-error' }, agy.error));
+  if (agy.instalado === false) {
+    partes.push(h('div', { clase: 'caja-aviso' },
+      'No encuentro agy en este servidor. Instálalo desde ',
+      enlaceInicio('antigravity.google', 'https://antigravity.google/'),
+      ' (o fija su ruta con ESTUDIO_AGY) y vuelve aquí.'));
+    return partes;
+  }
+
+  const cuenta = cuentaAgyDeLaGuia();
+  const intento = cuenta && cuenta.intento;
+  const abierto = !!(cuenta && agyAcceso(cuenta));
+  const salud = cuenta && cuenta.salud;
+  const caducada = !!(salud && salud.estado === 'sesion');
+
+  if (cuenta && cuenta.guardada && !abierto) {
+    partes.push(h('div', { clase: 'inicio-hecho' },
+      pastillaEstado(caducada ? 'error' : 'ok', caducada ? 'sesión caducada' : 'con sesión'),
+      pastillaSalud(salud),
+      h('span', { clase: 'meta' },
+        `Entrado como ${cuenta.etiqueta || 'tu cuenta de Google'}.`)));
+    const aviso = avisoSalud(salud);
+    if (aviso) partes.push(aviso);
+    partes.push(h('div', { clase: 'fila' },
+      h('button', {
+        clase: 'mini', disabled: estadoConfig().probandoAgy === cuenta.id,
+        title: 'Le habla a agy con una llamada mínima (gasta un poco de cupo)',
+        onclick: () => probarCuentaAgy(cuenta.id),
+      }, estadoConfig().probandoAgy === cuenta.id ? 'probando…' : 'Probar que contesta'),
+      caducada ? h('button', {
+        clase: 'mini primario', onclick: () => arrancarAccesoAgyGuia(false),
+      }, 'Entrar otra vez') : null));
+    partes.push(h('div', { clase: 'meta' },
+      'Más cuentas de Google, con su orden de respaldo, en Configuración.'));
+    return partes;
+  }
+
+  partes.push(h('ol', { clase: 'inicio-pasos' },
+    h('li', {}, 'Pulsa «Entrar con Google»: sale un enlace y empieza una cuenta '
+      + 'atrás de 60 s.'),
+    h('li', {}, 'Abre el enlace —vale desde el móvil—, entra con tu cuenta y copia '
+      + 'el código que te dé la página.'),
+    h('li', {}, 'Pégalo aquí: se envía solo. Si se acaba el tiempo, pide otro enlace.')));
+
+  if (INICIO.accesoAgyFallido) {
+    partes.push(h('div', { clase: 'caja-error' }, INICIO.accesoAgyFallido));
+  }
+  if (abierto) {
+    partes.push(pasoDelAccesoAgy(cuenta, intento, true));
+    return partes;
+  }
+  if (intento && intento.estado === 'fallo') {
+    partes.push(pasoDelAccesoAgy(cuenta, intento, true));
+    return partes;
+  }
+  partes.push(h('div', { clase: 'fila' }, h('button', {
+    clase: 'primario', disabled: INICIO.arrancandoAgy,
+    onclick: () => arrancarAccesoAgyGuia(false),
+  }, INICIO.arrancandoAgy ? 'pidiendo el enlace…' : 'Entrar con Google')));
+  return partes;
+}
+
+/* Arranca el acceso de la cuenta de la guía, creándola si no existe. */
+async function arrancarAccesoAgyGuia(reiniciar) {
+  if (INICIO.arrancandoAgy) return;
+  INICIO.arrancandoAgy = true;
+  INICIO.accesoAgyFallido = '';
+  pintarInicio();
+  try {
+    let cuenta = cuentaAgyDeLaGuia();
+    if (!cuenta) {
+      const vista = estadoConfig();
+      vista.ficha = await pedir(API.claves(), {
+        method: 'PUT', cuerpo: { agy: { cuentas: [{ etiqueta: '' }] } },
+      });
+      vista.agy = await pedir(API.estadoAgy());
+      cuenta = cuentaAgyDeLaGuia();
+    }
+    const r = await pedir(API.entrarAgy(cuenta.id, reiniciar), { method: 'POST' });
+    estadoConfig().agy = r;
+    estadoConfig().codigos[`agy:${cuenta.id}`] = '';
+    if (r.intento && r.intento.estado === 'fallo') {
+      INICIO.accesoAgyFallido = r.intento.mensaje || 'no se ha podido pedir el enlace';
+    }
+  } catch (e) {
+    INICIO.accesoAgyFallido = e.message;
+  } finally {
+    INICIO.arrancandoAgy = false;
+  }
+  repintarClaves();
+  latirAgy();
 }
 
 function tarjetaOpenAIInicio() {
@@ -10890,18 +11481,18 @@ function tarjetaFinalInicio() {
     pastillaEstado(puesta ? 'ok' : (opcional ? 'parcial' : 'error'),
       puesta ? 'puesta' : (opcional ? 'para luego' : 'sin poner')),
     h('span', {}, nombre));
-  const faltan = [!claude, !(ficha.openai && ficha.openai.length), !(ficha.cartesia && ficha.cartesia.puesta)]
+  const faltan = [!claude, !imagenesListasInicio(), !(ficha.cartesia && ficha.cartesia.puesta)]
     .filter(Boolean).length;
   return [
     fila('Claude — guion, catálogo, rótulos y el asistente', claude),
-    fila('OpenAI — imágenes', !!(ficha.openai && ficha.openai.length)),
+    fila('Imágenes — OpenAI o Google', imagenesListasInicio()),
     fila('Cartesia — voz', !!(ficha.cartesia && ficha.cartesia.puesta)),
     fila('Jamendo — música', !!(ficha.jamendo && ficha.jamendo.puesta), true),
     fila('FreeSound — efectos', !!(ficha.freesound && ficha.freesound.puesta), true),
     faltan
       ? h('div', { clase: 'caja-aviso' },
         `Falta${faltan > 1 ? 'n' : ''} ${faltan} de las tres que hacen falta para un vídeo `
-        + '(Claude, OpenAI y Cartesia). Sin ellas no sale el vídeo entero: se '
+        + '(Claude, imágenes y Cartesia). Sin ellas no sale el vídeo entero: se '
         + 'ponen desde Configuración, el engranaje de arriba a la derecha.')
       : h('div', { clase: 'caja-info' },
         'Está todo. Lo siguiente es crear un estilo (cómo se dibuja y cómo se '

@@ -9,10 +9,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # aunque un motor pesado rompa el resto del paquete.
 from . import claves  # noqa: E402,F401
 from . import cli_claude, comun, estadisticas  # noqa: E402,F401
-# login_cli (entrar con una cuenta del CLI desde la pantalla) va justo
-# detras: solo depende de cli_claude, y la pantalla de configuracion lo
-# busca por `PASOS_MODULOS.login_cli`.
-from . import login_cli  # noqa: E402,F401
+# login_cli y login_agy (entrar con una cuenta del CLI desde la pantalla) van justo
+# detras: la pantalla de configuracion los busca por `PASOS_MODULOS.login_cli` y `login_agy`.
+from . import login_agy, login_cli  # noqa: E402,F401
 # asistente (el chat de la burbuja) solo depende de cli_claude: la pantalla lo
 # busca por `PASOS_MODULOS.asistente` y tiene que poder contestar que no hay
 # sesion aunque un motor pesado rompa el resto del paquete.

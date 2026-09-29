@@ -188,9 +188,40 @@ def probar_claude(cuentas):
     return fichas
 
 
+def probar_agy(cuentas=None):
+    """Una ficha por cada cuenta de Google con sesion. -> [fichas]
+
+    Es una llamada de VERDAD a agy (consume un poco de cupo de suscripcion), asi
+    que solo se hace cuando alguien pulsa «Probar»: el estado que se ensena el
+    resto del tiempo es lo que apunto el motor en la ultima llamada real. Sin
+    ninguna cuenta configurada no se prueba nada: no hay nada que decir.
+    """
+    cuentas = claves.cuentas_agy() if cuentas is None else list(cuentas)
+    if not cuentas:
+        return []
+    try:
+        from . import medios
+    except ImportError:
+        import medios
+    motor = medios.motor("imagen_agy/imagen.py")
+    fichas = []
+    for cuenta in cuentas:
+        salud = motor.probar(cuenta, para="probar todas las claves")
+        estado = (salud or {}).get("estado")
+        nombre = cuenta.get("etiqueta") or cuenta.get("id")
+        if estado == "ok":
+            fichas.append(_ficha("agy", "ok", f"la cuenta {nombre} contesta",
+                                 cuenta=cuenta.get("id")))
+        else:
+            fichas.append(_ficha("agy", "mal",
+                                 (salud or {}).get("mensaje") or "no contesta",
+                                 cuenta=cuenta.get("id")))
+    return fichas
+
+
 # ------------------------------------------------------------------ todo junto
 
-def probar_todas(cuentas_claude=(), con_claude=True):
+def probar_todas(cuentas_claude=(), con_claude=True, con_agy=True):
     """Todas las claves del almacen, cada una contra su servicio. -> [fichas]
 
     `cuentas_claude` son las fichas del CLI que hay que probar (las decide
@@ -208,6 +239,10 @@ def probar_todas(cuentas_claude=(), con_claude=True):
                                  "simulado" if puesta else "sin poner"))
         if con_claude:
             fichas.extend(probar_claude(cuentas_claude))
+        if con_agy:
+            # solo las cuentas que existen: sin ninguna, agy no sale en la lista
+            for cuenta in claves.cuentas_agy():
+                fichas.append(_ficha("agy", "ok", "simulado", cuenta=cuenta["id"]))
         return fichas
     pruebas = (
         (probar_openai, (almacen["openai"][0]["clave"] if almacen["openai"] else "")),
@@ -228,12 +263,18 @@ def probar_todas(cuentas_claude=(), con_claude=True):
         except Exception as fallo:                     # noqa: BLE001
             fichas.append(_ficha("claude", "sin_red", f"la prueba ha fallado: "
                                                       f"{type(fallo).__name__}: {fallo}"))
+    if con_agy:
+        try:
+            fichas.extend(probar_agy())
+        except Exception as fallo:                     # noqa: BLE001
+            fichas.append(_ficha("agy", "sin_red", f"la prueba ha fallado: "
+                                                   f"{type(fallo).__name__}: {fallo}"))
     return fichas
 
 
 NOMBRES = {"openai": "OpenAI (imágenes)", "cartesia": "Cartesia (voz)",
            "jamendo": "Jamendo (música)", "freesound": "FreeSound (efectos)",
-           "claude": "Claude"}
+           "claude": "Claude", "agy": "Google (Antigravity)"}
 
 
 def resumen_texto(fichas):

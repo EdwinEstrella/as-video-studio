@@ -249,11 +249,22 @@ def prueba_claves():
         fichas = comprobar_claves.probar_todas(cuentas_claude=[{"config_dir": "", "etiqueta": "x"}])
         igual([f["proveedor"] for f in fichas],
               ["openai", "cartesia", "jamendo", "freesound", "claude"],
-              "probar_todas trae los cinco en orden")
+              "probar_todas trae los cinco en orden (sin cuentas de Google)")
         comprobar(all(f["estado"] in ("ok", "sin_clave") for f in fichas),
                   "y en simulado ninguna sale a la red")
         texto = comprobar_claves.resumen_texto(fichas)
         comprobar("OpenAI" in texto and "\n" in texto, "y hay un resumen legible")
+        comprobar(not any(f["proveedor"] == "agy" for f in fichas),
+                  "sin ninguna cuenta de Google configurada agy no sale (y no finge 'ok')")
+        # con una cuenta de Google con sesion, agy entra: una ficha por cuenta
+        import claves
+        claves.guardar({"agy": [{"etiqueta": "la mia"}]})
+        claves.apuntar_cuenta_agy("agy1", entrada=True)
+        fichas = comprobar_claves.probar_todas(cuentas_claude=[{"config_dir": "", "etiqueta": "x"}])
+        igual([f["proveedor"] for f in fichas],
+              ["openai", "cartesia", "jamendo", "freesound", "claude", "agy"],
+              "con una cuenta de Google configurada salen seis, agy la ultima")
+        igual(fichas[-1].get("cuenta"), "agy1", "y la ficha dice de que cuenta es")
     finally:
         os.environ.pop("ESTUDIO_SIMULAR", None)
 

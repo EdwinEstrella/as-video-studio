@@ -1,10 +1,14 @@
-# El estudio (Python + ffmpeg + navegador + CLI de Claude). Contexto: la raiz del
+# El estudio (Python + ffmpeg + navegador + CLIs de Claude y de Antigravity). Contexto: la raiz del
 # repositorio. Reproduce lo que instalar.sh monta en un VPS; ver LEEME.md.
 FROM node:22-bookworm-slim AS node
 
 FROM python:3.12-slim-bookworm
 
 ARG EXIGIR_FUENTES_MS=0
+# El CLI de Antigravity (agy) es opcional: con AGY_OBLIGATORIO=1 el build falla si
+# no se puede instalar; con 0 (lo normal) la imagen se construye igual y solo el
+# motor de imagen de Google queda sin binario.
+ARG AGY_OBLIGATORIO=0
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
@@ -15,7 +19,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN sed -i 's/^Components: main$/Components: main contrib/' /etc/apt/sources.list.d/debian.sources \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
-      ca-certificates wget cabextract fontconfig \
+      ca-certificates curl wget cabextract fontconfig \
       ffmpeg chromium \
  && rm -rf /var/lib/apt/lists/*
 
@@ -26,6 +30,23 @@ COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
  && npm install -g @anthropic-ai/claude-code --no-audit --no-fund \
  && claude --version
+
+# El CLI de Antigravity (agy), el motor de imagen de Google. El instalador lo deja
+# en ~/.local/bin del usuario que corre el build (root), y AHI NO SIRVE: en
+# ejecucion HOME es /datos/home, que es un volumen y tapa lo que hubiera dentro.
+# Por eso se copia a /usr/local/bin, que es de la imagen, y se le dice al motor
+# donde esta con ESTUDIO_AGY. La sesion de cada cuenta NO va en la imagen: vive en
+# /datos/secretos/agy/<id>/ y se hace desde la pantalla.
+RUN if curl -fsSL https://antigravity.google/cli/install.sh | bash \
+      && [ -x /root/.local/bin/agy ]; then \
+        install -m 755 /root/.local/bin/agy /usr/local/bin/agy \
+        && rm -rf /root/.local /root/.gemini \
+        && agy --version; \
+    elif [ "${AGY_OBLIGATORIO}" = "1" ]; then \
+        echo "no se pudo instalar agy (AGY_OBLIGATORIO=1)" >&2; exit 1; \
+    else \
+        echo "AVISO: agy no se ha instalado; el motor de imagen de Google no funcionara" >&2; \
+    fi
 
 # Las fuentes: ver fuentes.sh (es el punto delicado del estudio).
 ENV ESTUDIO_FUENTES=/usr/local/share/fonts/estudio
@@ -84,6 +105,7 @@ ENV HOME=/datos/home \
     ESTUDIO_COSTE_GLOBAL=/datos/coste_global.jsonl \
     ESTUDIO_BITACORA_GLOBAL=/datos/bitacora_global.jsonl \
     ESTUDIO_MOTORES=/app/motores \
+    ESTUDIO_AGY=/usr/local/bin/agy \
     ESTUDIO_EDGE=/usr/local/bin/estudio-edge
 
 USER studio

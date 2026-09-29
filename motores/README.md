@@ -23,6 +23,7 @@ llamando a `pasos/claves.py`.
 | `guion/` | Corta la narración en planos a partir de las marcas de palabra (`segmentar`) y mide la cadencia real de una toma (`medir_ritmo`). |
 | `voz_cartesia/` | Sintetiza la locución con Cartesia y devuelve las marcas de tiempo con las que se sincroniza todo lo demás (`voz`, `sincronizar`). |
 | `imagen_openai/` | Genera cada plano. Lleva dentro el freno del límite de la API, la cuenta del gasto y el reparto entre cuentas. |
+| `imagen_agy/` | Lo mismo que `imagen_openai/` pero con el CLI de Antigravity (`agy`): recorta y escala al lienzo, reparte entre varias cuentas de Google (cada una con su HOME aislado) y apunta la salud de cada una en `salud_agy.json`. Ver su cabecera. |
 | `capa_vectorial/` | Lo que se dibuja ENCIMA del plano: cabeceras de capítulo (`cabecera`) y mapas encuadrados por región (`mapa`, con `datos/paises_110m.geojson`). |
 | `render_video/` | El recorrido de cámara de cada plano (`movimiento`): la ventana que se mueve por encima de una imagen quieta. |
 | `reglas/` | Las reglas de dibujo aprendidas del feedback, con su procedencia (`reglas.json`) y el destilador que las escribe (`reglas.py`). |

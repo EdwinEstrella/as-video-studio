@@ -2012,6 +2012,13 @@ button.primario.grande { padding: 9px 18px; font-size: 14px; }
 }
 .cli-enlace:hover { background: var(--acento-borde); }
 .meta.aviso { color: var(--aviso-texto); }
+/* La cuenta atras de los 60 s que da agy para pegar el codigo. Sin numero fijo
+   de ancho el texto bailaria con cada segundo. */
+.agy-cuenta-atras {
+  font-variant-numeric: tabular-nums; font-weight: 600; color: var(--acento);
+}
+.agy-cuenta-atras.poco { color: var(--aviso); }
+.agy-cuenta-atras.agotado { color: var(--malo); }
 
 /* ------------------------------------------------ el previsualizador
  *

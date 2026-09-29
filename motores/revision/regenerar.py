@@ -24,9 +24,28 @@ import sys
 #: La carpeta de motores es la que contiene ESTE fichero. Antes era una ruta
 #: fija a una maquina concreta.
 MOTORES = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(MOTORES, "imagen_openai"))
+import importlib.util  # noqa: E402
 
-import imagen as motor  # noqa: E402
+#: Los motores de imagen que sabe usar la correccion. Se cargan por RUTA y no
+#: por nombre: los dos se llaman `imagen.py`, y un `import imagen` a secas
+#: devolveria siempre el primero que hubiera en sys.path -- o sea OpenAI, tambien
+#: para un proyecto de Google. Un motor no importa codigo del Estudio, asi que
+#: el proyecto dice cual usa por argumento (`motor_imagen`), no por sus params.
+_MOTORES_IMAGEN = {"openai": "imagen_openai", "agy": "imagen_agy"}
+_CARGADOS = {}
+
+
+def cargar_motor_imagen(nombre="openai"):
+    """El modulo de imagen para `nombre` (openai | agy). Cualquier otro: OpenAI."""
+    carpeta = _MOTORES_IMAGEN.get(nombre, _MOTORES_IMAGEN["openai"])
+    if carpeta not in _CARGADOS:
+        ruta = os.path.join(MOTORES, carpeta, "imagen.py")
+        spec = importlib.util.spec_from_file_location(f"regenerar_{carpeta}", ruta)
+        modulo = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(modulo)
+        _CARGADOS[carpeta] = modulo
+    return _CARGADOS[carpeta]
+
 
 # Sin ventana negra. Estos procesos (yt-dlp, ffmpeg, whisperx) son de consola, y
 # lanzados desde el servicio del Estudio abren una ventana encima de todo por
@@ -86,8 +105,13 @@ def prompt_correctivo(prompt_original, feedback, trazos, generales=""):
 # --------------------------------------------------------------- camino directo
 
 def regenerar_directo(proyecto, escena_id, feedback, trazos, generales="",
-                      quality="low", carpeta="storyboard"):
-    """Vuelve a generar la escena con el prompt corregido."""
+                      quality="low", carpeta="storyboard", motor_imagen="openai"):
+    """Vuelve a generar la escena con el prompt corregido.
+
+    `motor_imagen` es el del proyecto: con `agy` no se llama a OpenAI ni para
+    normalizar una referencia.
+    """
+    motor = cargar_motor_imagen(motor_imagen)
     meta_ruta = os.path.join(proyecto, "assets", carpeta, "escenas_meta.json")
     if not os.path.exists(meta_ruta):
         raise RuntimeError(f"No encuentro {meta_ruta}")
@@ -216,9 +240,11 @@ if __name__ == "__main__":
     parser.add_argument("--generales", default="")
     parser.add_argument("--modo", default="directo", choices=["directo", "agente"])
     parser.add_argument("--carpeta", default="storyboard")
+    parser.add_argument("--motor-imagen", default="openai", choices=["openai", "agy"])
     args = parser.parse_args()
 
+    extra = {"motor_imagen": args.motor_imagen} if args.modo == "directo" else {}
     fn = regenerar_directo if args.modo == "directo" else regenerar_agente
     print(json.dumps(fn(args.proyecto, args.escena, args.feedback, [],
-                        args.generales, carpeta=args.carpeta),
+                        args.generales, carpeta=args.carpeta, **extra),
                      ensure_ascii=False, indent=2))

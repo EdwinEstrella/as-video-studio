@@ -129,7 +129,7 @@ PARAMS_POR_DEFECTO = {
     # persona; a partir de ahi es un dato. QUE PLANTILLAS puede usar vive en los
     # params de rotulos, junto al resto del grafismo.
     "semilla": 7,
-    "motor_imagen": "openai",          # openai | adoptar
+    "motor_imagen": "openai",          # openai | agy | adoptar
     "imagenes_previas": [],            # carpetas de arte ya aprobado
     # Fotogramas REALES del video de referencia, aprobados a mano, para que el
     # dibujo de una persona o un sitio concreto se parezca al original. Vacio en
@@ -174,6 +174,7 @@ def describir(params):
     p = _con_defectos(params)
     catalogo = p["catalogo"] or {}
     motor = ("adoptando arte ya existente" if p["motor_imagen"] == "adoptar"
+             else "generando con Google (Antigravity)" if p["motor_imagen"] == "agy"
              else f"generando con gpt-image-2 en calidad {p['calidad']}")
     encuadre = ("asigna a cada plano su clase de encuadre en texto "
                 "(caben diagramas y pantallas)")
@@ -867,7 +868,7 @@ def _referencias_de_la_nota(escena, dirs, p, cache, notas=None):
     adjuntos = _adjuntos_de_la_nota(escena, dirs, p, notas)
     if not adjuntos:
         return []
-    imagen = medios.motor("imagen_openai/imagen.py")
+    imagen = medios.motor_de_imagen(p)
     return [{"papel": a["papel"], "ruta": imagen.normalizar(a["ruta"], cache)}
             for a in adjuntos]
 
@@ -2932,6 +2933,27 @@ def _adoptar(nombre, p, firma=None, subcarpetas=("", "escenas", "storyboard", "r
     return None
 
 
+def _firma_de_imagen(prompt, referencias, tamano, p):
+    """La firma de cache de una imagen.
+
+    EL MOTOR SOLO ENTRA EN LA FIRMA CUANDO ES agy. Con openai --el defecto-- o
+    `adoptar`, o sin el param, la firma es BYTE A BYTE la de siempre: meter la
+    clave `motor` para cualquier valor distinto de openai movia la firma de los
+    proyectos en modo `adoptar` y les dejaba obsoletas todas las imagenes ya
+    pagadas. Una imagen de Google si es otra imagen que la de OpenAI, y por eso
+    esa si se distingue.
+    """
+    datos = {"prompt": prompt, "calidad": p["calidad"],
+             # el tamano entra en la firma: la misma escena en
+             # vertical es otra imagen, y la cache no puede
+             # devolver la apaisada
+             "tamano": tamano if tamano != "apaisado" else None,
+             "refs": [medios.huella_fichero(r) for r in referencias]}
+    if p.get("motor_imagen") == "agy":
+        datos["motor"] = "agy"
+    return medios.huella(datos)
+
+
 def _producir_imagen(nombre, prompt, referencias, destino, p, rehacer=False,
                      tamano=None):
     """Arte adoptado -> cache -> API. Devuelve como se resolvio y el coste.
@@ -2945,12 +2967,7 @@ def _producir_imagen(nombre, prompt, referencias, destino, p, rehacer=False,
     apaisadas, que es como se leen mejor como referencia.
     """
     tamano = tamano or "apaisado"
-    firma = medios.huella({"prompt": prompt, "calidad": p["calidad"],
-                           # el tamano entra en la firma: la misma escena en
-                           # vertical es otra imagen, y la cache no puede
-                           # devolver la apaisada
-                           "tamano": tamano if tamano != "apaisado" else None,
-                           "refs": [medios.huella_fichero(r) for r in referencias]})
+    firma = _firma_de_imagen(prompt, referencias, tamano, p)
     cacheada = os.path.join(p["banco_imagenes"], f"{firma}.png")
     # En el modo explicito 'adoptar' el objetivo es no gastar, asi que se acepta
     # arte que solo coincide en nombre. El guardian de planos repetidos sigue
@@ -2973,7 +2990,7 @@ def _producir_imagen(nombre, prompt, referencias, destino, p, rehacer=False,
             medios.copiar(cacheada, destino)
             return {"origen": "cache", "firma": firma, "coste": 0.0}
 
-    imagen = medios.motor("imagen_openai/imagen.py")
+    imagen = medios.motor_de_imagen(p)
     try:
         png, meta = imagen.generar(prompt, referencias, quality=p["calidad"],
                                    tamano=tamano)
@@ -3363,7 +3380,7 @@ def _generar_escenas(plan, dirs, p, trabajo, toca, unidades, resultados, avisar,
                     # las mismas clases y las mismas frases que en la primera
                     # generacion (frase_de_referencia); el corrector solo
                     # elige cuales y anade el detalle
-                    motor_imagen = medios.motor("imagen_openai/imagen.py")
+                    motor_imagen = medios.motor_de_imagen(p)
                     referencias = (
                         list(_referencias_estilo(p, dirs["cache"], escena_final))
                         + [dict(r, ruta=motor_imagen.normalizar(r["ruta"],
@@ -3729,7 +3746,7 @@ def _referencias_estilo(p, cache, escena=None):
     un interior si hay sitio --, y sigue siendo UNA sola imagen: lo que cambia no
     es cuantas referencias van, es cuales.
     """
-    imagen = medios.motor("imagen_openai/imagen.py")
+    imagen = medios.motor_de_imagen(p)
     rutas = [r for r in medios.reubicar_todas(p["estilo"].get("referencias"))
              if os.path.exists(r)]
     if rutas and escena is not None:
@@ -3849,7 +3866,7 @@ def _referencias_escena(escena, plan, dirs, p, cache, hechas, anteriores=None,
     el resultado dependeria de quien llegase antes. Un pipeline que da imagenes
     distintas segun el orden de los hilos deja de ser reproducible.
     """
-    imagen = medios.motor("imagen_openai/imagen.py")
+    imagen = medios.motor_de_imagen(p)
     referencias = list(_referencias_estilo(p, cache, escena))
     # La MISMA ficha con la que se dibujo la hoja (`_assets_necesarios`), que es
     # la unica forma de que el plano y la hoja lean lo mismo: leerlo del catalogo

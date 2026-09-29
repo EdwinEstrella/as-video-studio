@@ -418,7 +418,7 @@ def prompt_de_dibujo(descripcion, estilo, peticion="", guia_escrita=None,
 
 
 def generar(referencias, estilo, ejes=None, peticiones=None, calidad="medium",
-            avisar=None, raiz=None, idioma=""):
+            avisar=None, raiz=None, idioma="", motor=None):
     """Dibuja las laminas de estilo que faltan y las deja PROPUESTAS.
 
     'ejes' None son todos; con una lista se rehacen solo esos, que es lo que
@@ -432,7 +432,9 @@ def generar(referencias, estilo, ejes=None, peticiones=None, calidad="medium",
     cualquier video que lo use, asi que ahorrar aqui es ahorrar en el sitio
     equivocado.
     """
-    imagen = medios.motor("imagen_openai/imagen.py")
+    # `motor` es el modulo de imagen del proyecto (`medios.motor_de_imagen`);
+    # sin el, OpenAI, que es lo que siempre hubo
+    imagen = motor or medios.motor_de_imagen(None)
     reglas = medios.motor("reglas/reglas.py")
     avisar = avisar or (lambda *a, **k: None)
     rutas = [r for r in (referencias or []) if os.path.exists(r)]
@@ -667,7 +669,7 @@ def importar(carpeta, clave, raiz=None):
 # de las palabras del canal y las laminas salen de la guia, en ese orden.
 
 def dibujar_desde_guia(estilo, destino, ejes=None, calidad="medium",
-                       avisar=None, idioma="", peticiones=None):
+                       avisar=None, idioma="", peticiones=None, motor=None):
     """Dibuja las laminas de un estilo DESCRITO. -> {rutas, ejes, coste_usd}.
 
     Sin fotogramas de entrada y sin tocar el banco de moodboards: las laminas se
@@ -682,7 +684,9 @@ def dibujar_desde_guia(estilo, destino, ejes=None, calidad="medium",
     lamina con su descripcion generica de siempre, pagaba la imagen y devolvia
     otra vez lo mismo, con la correccion dada por aplicada.
     """
-    imagen = medios.motor("imagen_openai/imagen.py")
+    # `motor` es el modulo de imagen del proyecto (`medios.motor_de_imagen`);
+    # sin el, OpenAI, que es lo que siempre hubo
+    imagen = motor or medios.motor_de_imagen(None)
     reglas = medios.motor("reglas/reglas.py")
     avisar = avisar or (lambda *a, **k: None)
     pedidos = [e for e in (ejes or EJES) if e in EJES]

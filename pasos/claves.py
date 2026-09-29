@@ -89,6 +89,10 @@ MAX_OPENAI = 1
 #: espera mas antes de darse por vencido.
 MAX_CLI = 6
 
+#: Tope de cuentas de Google (agy). Igual razon que MAX_CLI: cada cuenta de mas
+#: es una espera mas cuando todas fallan.
+MAX_AGY = 6
+
 _LOCK = threading.RLock()
 
 
@@ -109,6 +113,7 @@ def _vacio():
         "jamendo": {"clave": ""},
         "freesound": {"clave": ""},
         "claude_cli": {"cuentas": []},
+        "agy": {"cuentas": []},
     }
 
 
@@ -163,6 +168,7 @@ def _normalizar(datos):
         elif isinstance(cruda, str):
             base[suelta]["clave"] = cruda.strip()
     base["claude_cli"]["cuentas"] = _cuentas_cli_de(datos.get("claude_cli"))
+    base["agy"]["cuentas"] = _cuentas_agy_de(datos.get("agy"))
     return base
 
 
@@ -212,6 +218,32 @@ def _cuentas_cli_de(crudo):
             continue
         cuentas.append(_ficha_cli(cruda, cuentas))
     return cuentas[:MAX_CLI]
+
+
+def _ficha_agy(cruda, ya):
+    """Una cuenta de Google (agy) en su forma canonica.
+
+    Como la del CLI de Claude: `home` y `entrada` son del SERVIDOR (la pantalla
+    no los manda), y `activa` es lo unico que decide el usuario ademas del
+    nombre y el orden.
+    """
+    return {
+        "id": str(cruda.get("id") or "").strip() or _nuevo_id(ya, "agy"),
+        "etiqueta": str(cruda.get("etiqueta") or "").strip(),
+        "home": str(cruda.get("home") or "").strip(),
+        "entrada": bool(cruda.get("entrada")),
+        "activa": cruda.get("activa") is not False,
+    }
+
+
+def _cuentas_agy_de(crudo):
+    if isinstance(crudo, dict):
+        crudo = crudo.get("cuentas")
+    cuentas = []
+    for cruda in crudo if isinstance(crudo, list) else []:
+        if isinstance(cruda, dict):
+            cuentas.append(_ficha_agy(cruda, cuentas))
+    return cuentas[:MAX_AGY]
 
 
 def _nuevo_id(ya, prefijo="cta"):
@@ -345,7 +377,65 @@ def _fusionar(actual, peticion):
             peticion.get("claude_cli"), actual["claude_cli"]["cuentas"])
     else:
         salida["claude_cli"] = actual["claude_cli"]
+    if "agy" in peticion:
+        salida["agy"]["cuentas"] = _cuentas_agy_pedidas(
+            peticion.get("agy"), actual["agy"]["cuentas"])
+    else:
+        salida["agy"] = actual["agy"]
     return salida
+
+
+def _cuentas_agy_pedidas(crudo, actuales):
+    """La lista que pide la pantalla para agy, con lo del servidor intacto.
+
+    Igual que `_cuentas_cli_pedidas`: la pantalla manda id, etiqueta, `activa` y
+    el ORDEN; `home` y `entrada` se quedan como estaban. La que no venga, se va
+    de la lista (su carpeta la borra la ruta de quitar, no esto).
+    """
+    if isinstance(crudo, dict) and isinstance(crudo.get("cuentas"), list):
+        crudas = crudo["cuentas"]
+    elif isinstance(crudo, list):
+        crudas = crudo
+    else:
+        raise ErrorClaves("'agy' tiene que ser una lista ordenada de cuentas, "
+                          "o un objeto {cuentas: [...]}")
+    if len(crudas) > MAX_AGY:
+        raise ErrorClaves(f"como mucho {MAX_AGY} cuentas de Google")
+    por_id = {c["id"]: c for c in actuales}
+    cuentas = []
+    for cruda in crudas:
+        if not isinstance(cruda, dict):
+            raise ErrorClaves("cada cuenta de Google es un objeto {id, etiqueta}")
+        cid = str(cruda.get("id") or "").strip()
+        anterior = por_id.get(cid) or {}
+        cuentas.append(_ficha_agy({
+            "id": cid,
+            "etiqueta": cruda.get("etiqueta"),
+            "home": anterior.get("home", ""),
+            "entrada": anterior.get("entrada", False),
+            # sin decirlo se conserva lo que habia; una cuenta nueva nace activa
+            "activa": cruda["activa"] if "activa" in cruda
+            else anterior.get("activa", True),
+        }, cuentas))
+    _revisar_cuentas_agy(cuentas)
+    return cuentas
+
+
+def _revisar_cuentas_agy(cuentas):
+    vistos, homes = set(), {}
+    for cuenta in cuentas:
+        if cuenta["id"] in vistos:
+            raise ErrorClaves(f"la cuenta '{cuenta['id']}' esta dos veces en la "
+                              f"lista")
+        vistos.add(cuenta["id"])
+        if not cuenta["home"]:
+            continue
+        llave = os.path.normcase(os.path.abspath(cuenta["home"]))
+        if llave in homes:
+            raise ErrorClaves(
+                f"'{cuenta['etiqueta'] or cuenta['id']}' y '{homes[llave]}' usan "
+                f"la MISMA carpeta de sesion: serian la misma cuenta")
+        homes[llave] = cuenta["etiqueta"] or cuenta["id"]
 
 
 def _cuentas_cli_pedidas(crudo, actuales):
@@ -542,6 +632,15 @@ def resumen(datos=None):
             } for c in datos["claude_cli"]["cuentas"]],
             "max": MAX_CLI,
         },
+        "agy": {
+            "cuentas": [{
+                "id": c["id"],
+                "etiqueta": c["etiqueta"],
+                "entrada": c["entrada"],
+                "activa": c["activa"],
+            } for c in datos["agy"]["cuentas"]],
+            "max": MAX_AGY,
+        },
         "jamendo": {
             "puesta": bool(datos["jamendo"]["clave"]),
             "cola": tapar(datos["jamendo"]["clave"]),
@@ -608,6 +707,37 @@ def apuntar_cuenta_cli(cuenta_id, config_dir=None, entrada=None, etiqueta=None):
             _escribir_json(FICHERO, datos)
             return dict(ficha)
     raise ErrorClaves(f"no hay ninguna cuenta del CLI con id '{cuenta_id}'")
+
+
+def cuentas_agy(solo_listas=True):
+    """Las cuentas de Google (agy), EN ORDEN. -> list
+
+    `solo_listas` deja fuera las de acceso a medias o desactivadas: es lo que
+    quiere quien va a LLAMAR a agy. La pantalla las quiere todas.
+    """
+    cuentas = leer()["agy"]["cuentas"]
+    if solo_listas:
+        return [c for c in cuentas if c["entrada"] and c["activa"]]
+    return list(cuentas)
+
+
+def apuntar_cuenta_agy(cuenta_id, home=None, entrada=None, etiqueta=None):
+    """Lo que escribe el SERVIDOR sobre una cuenta de Google. -> la ficha"""
+    with _LOCK:
+        datos = leer()
+        for ficha in datos["agy"]["cuentas"]:
+            if ficha["id"] != cuenta_id:
+                continue
+            if home is not None:
+                ficha["home"] = str(home or "").strip()
+            if entrada is not None:
+                ficha["entrada"] = bool(entrada)
+            if etiqueta is not None:
+                ficha["etiqueta"] = str(etiqueta or "").strip()
+            _revisar_cuentas_agy(datos["agy"]["cuentas"])
+            _escribir_json(FICHERO, datos)
+            return dict(ficha)
+    raise ErrorClaves(f"no hay ninguna cuenta de Google con id '{cuenta_id}'")
 
 
 def cartesia():
