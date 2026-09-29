@@ -15,9 +15,12 @@ const scrypt = promisify(crypto.scrypt);
 // 128 * N * r = 32 MiB de memoria por hash. Coste ~100-200 ms por intento.
 const PARAMS = { N: 32768, r: 8, p: 1, keylen: 64, maxmem: 96 * 1024 * 1024 };
 
+// El minimo de una contrasena, para el CLI y para el alta desde la pantalla.
+const MIN_PASSWORD = 8;
+
 async function hashPassword(password) {
-  if (typeof password !== 'string' || password.length < 12) {
-    throw new Error('La contrasena debe tener al menos 12 caracteres.');
+  if (typeof password !== 'string' || password.length < MIN_PASSWORD) {
+    throw new Error(`La contrasena debe tener al menos ${MIN_PASSWORD} caracteres.`);
   }
   const salt = crypto.randomBytes(16);
   const derived = await scrypt(password.normalize('NFKC'), salt, PARAMS.keylen, PARAMS);
@@ -87,4 +90,4 @@ function randomToken(bytes = 32) {
   return crypto.randomBytes(bytes).toString('base64url');
 }
 
-module.exports = { hashPassword, verifyPassword, generatePassword, randomToken };
+module.exports = { hashPassword, verifyPassword, generatePassword, randomToken, MIN_PASSWORD };

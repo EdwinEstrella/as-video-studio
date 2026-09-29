@@ -143,8 +143,9 @@
       password.focus();
       return;
     }
-    if (primeraVez && pass.length < 12) {
-      showError('La contraseña necesita al menos 12 caracteres.');
+    // El mismo minimo que MIN_PASSWORD de lib/auth.js; el servidor lo vuelve a mirar.
+    if (primeraVez && pass.length < 8) {
+      showError('La contraseña necesita al menos 8 caracteres.');
       password.focus();
       return;
     }

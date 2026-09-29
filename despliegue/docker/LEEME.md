@@ -43,21 +43,28 @@ porque Traefik devuelve al navegador la respuesta del acceso tal cual, sin el
 4. **Deploy.** El primer build tarda: instala Chromium, ffmpeg, Node y el CLI de
    Claude.
 
-## La primera contraseña
+## La primera cuenta
 
-El acceso arranca sin ninguna cuenta. Desde **Dokploy → el servicio `login` →
-Terminal** (contenedor `login`, shell `bash`):
+Como en n8n: la primera vez que se abre el dominio, sin ninguna cuenta creada,
+la pantalla de acceso pide **crear la cuenta** con un correo y una contraseña
+(mínimo 8 caracteres). Desde entonces se entra con esos dos datos, y esa
+pantalla no vuelve a salir.
+
+**Hasta que se crea, la crea quien llegue primero.** Abre el dominio justo
+después del primer despliegue. Si alguien se adelantara, se ve en los logs del
+servicio `login` (`[alta] primera cuenta creada: <correo>`): se borra el volumen
+`login_datos` y se vuelve a desplegar.
+
+Desde la terminal del contenedor `login` sigue funcionando el CLI, para
+cambiar o recuperar una contraseña:
 
 ```bash
-estudio-clave --nueva          # pide una contraseña (Intro: la genera) y la deja puesta
+estudio-clave --nueva          # pone una contraseña nueva (Intro: la genera)
 estudio-clave                  # vuelve a enseñar la guardada
 ```
 
-Es el equivalente de `despliegue/estudio-clave` sin `root` ni `systemd`. La
-copia queda en `/login-datos/clave-<cuenta>.txt` (modo 600, dentro del volumen
-del acceso): quien pueda abrir esa terminal en Dokploy puede leerla, igual que en
-el VPS quien tiene el panel tiene la llave. El login no pide usuario, solo la
-contraseña.
+Una cuenta creada así se llama `estudio` y no tiene correo: se entra
+escribiendo `estudio` en el campo del correo.
 
 ## La sesión de Claude
 

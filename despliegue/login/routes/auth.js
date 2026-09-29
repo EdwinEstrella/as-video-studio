@@ -20,7 +20,7 @@ const rateLimit = require('express-rate-limit');
 
 const config = require('../lib/config');
 const { elegirCuenta, urlPanelHostinger, SENUELO } = require('../lib/acceso');
-const { hashPassword, verifyPassword } = require('../lib/auth');
+const { hashPassword, verifyPassword, MIN_PASSWORD } = require('../lib/auth');
 const {
   stmt, minutosDeBloqueo, registrarFallo, bloquearAcceso, limpiarBloqueo,
   crearPrimeraCuenta,
@@ -133,8 +133,10 @@ router.post('/alta', loginLimiter, verifyCsrf, async (req, res) => {
   if (!FORMA_CORREO.test(email) || email.length > 200) {
     return res.status(400).json({ ok: false, error: 'Escribe un correo valido.' });
   }
-  if (password.length < 12) {
-    return res.status(400).json({ ok: false, error: 'La contrasena necesita al menos 12 caracteres.' });
+  if (password.length < MIN_PASSWORD) {
+    return res.status(400).json({
+      ok: false, error: `La contrasena necesita al menos ${MIN_PASSWORD} caracteres.`,
+    });
   }
 
   const user = crearPrimeraCuenta({

@@ -84,8 +84,8 @@ nueva() {
   if [ -t 0 ]; then
     read -rsp "Contraseña nueva para «$cuenta» (Intro para generar una): " pw
     echo
-    if [ -n "$pw" ] && [ "${#pw}" -lt 12 ]; then
-      echo "Mínimo 12 caracteres. No se ha cambiado nada."
+    if [ -n "$pw" ] && [ "${#pw}" -lt 8 ]; then
+      echo "Mínimo 8 caracteres. No se ha cambiado nada."
       exit 1
     fi
   fi
