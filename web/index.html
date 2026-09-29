@@ -25,6 +25,10 @@
   <button id="coste" class="coste" title="Coste del vídeo — pulsa para ver el desglose por paso"></button>
   <!-- Configuracion: las claves de API y las cuentas. Va en la barra y no en
        una pestana porque no es de este video: es de la maquina. -->
+  <!-- Retomar la guia de inicio. Oculto de fabrica: solo aparece mientras falte
+       algo de lo que hace falta para un video (Claude, OpenAI, Cartesia), y
+       abre la guia en el primer paso pendiente (ver `actualizarBotonGuia`). -->
+  <button id="btn-guia" class="mini primario oculto" title="Abrir la guía de inicio donde te quedaste">Completar configuración</button>
   <button id="btn-config" class="mini fantasma" title="Claves de API y cuentas">⚙</button>
   <!-- LA CUENTA. Vacio y oculto de fabrica: solo se rellena si delante hay un
        login que conteste /api/me. En local no lo hay --se entra sin cuenta--,

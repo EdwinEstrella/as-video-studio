@@ -2257,6 +2257,7 @@ function latirCLI() {
    (`estadoConfig()`), así que guardar una clave desde una tiene que verse en
    la otra sin que ninguna sepa de la existencia de la otra. */
 function repintarClaves() {
+  actualizarBotonGuia();
   const cajon = $('#config');
   if (cajon && !cajon.classList.contains('plegado')) pintarConfig();
   if (INICIO.abierta) pintarInicio();
@@ -2284,9 +2285,9 @@ function pintarConfig() {
   caja.appendChild(h('div', { clase: 'fila' },
     h('button', {
       clase: 'mini fantasma',
-      title: 'Las tarjetas de la primera vez: qué hace falta y dónde se consigue',
-      onclick: () => { conmutarConfig(false); abrirInicio(0); },
-    }, 'Volver a ver la guía de inicio')));
+      title: 'Las tarjetas de la primera vez, abiertas en la primera que falte',
+      onclick: () => retomarInicio(),
+    }, 'Continuar la guía de inicio')));
   caja.appendChild(h('div', { clase: 'meta', estilo: 'margin-top:14px' },
     `Se guardan en ${ficha.fichero}, fuera del repositorio. No hace falta `
     + 'reiniciar: el motor de imagen recoge las cuentas nuevas solo, y el CLI '
@@ -4597,6 +4598,7 @@ function arrancar() {
     if (PESTANAS.some(p => p.id === pedida) && pedida !== APP.activa) irA(pedida, true);
   });
   $('#btn-config').addEventListener('click', () => conmutarConfig());
+  $('#btn-guia').addEventListener('click', () => retomarInicio());
   $('#btn-salir').addEventListener('click', () => salirDeStudio());
   cargarCuenta();
   montarAsistente();
@@ -10425,6 +10427,63 @@ async function decidirOnboarding() {
     const r = await pedir(API.ajustes());
     if (r.ajustes && r.ajustes.onboarding_visto === false) abrirInicio(0);
   } catch (e) { /* sin ajustes no hay guía, y no pasa nada */ }
+  // Las cuentas del CLI llegan después, por su lado, y al llegar repintan
+  // (`repintarClaves` → `actualizarBotonGuia`): hasta entonces el botón no sale.
+  await cargarClaves().catch(() => {});
+  actualizarBotonGuia();
+}
+
+/* RETOMAR LA GUÍA donde se dejó: en la primera parada que falte. Las que
+   hacen falta para un vídeo (Claude, OpenAI, Cartesia) van antes que las que
+   se pueden dejar (Jamendo, FreeSound); con todo puesto, la bienvenida. Lo
+   hecho se mira igual que en la tarjeta final, para que las dos cuenten lo
+   mismo. */
+function claudeConectadoInicio() {
+  const cuentas = (estadoConfig().cli && estadoConfig().cli.cuentas) || [];
+  return cuentas.some(c => c.sesion && c.sesion.conectada)
+    || !!(ASISTENTE.estado && ASISTENTE.estado.listo);
+}
+
+function pasosPendientesInicio() {
+  const ficha = estadoConfig().ficha || {};
+  const hecho = {
+    claude: claudeConectadoInicio(),
+    openai: !!(ficha.openai && ficha.openai.length),
+    cartesia: !!(ficha.cartesia && ficha.cartesia.puesta),
+    jamendo: !!(ficha.jamendo && ficha.jamendo.puesta),
+    freesound: !!(ficha.freesound && ficha.freesound.puesta),
+  };
+  const faltan = id => id in hecho && !hecho[id];
+  return {
+    necesarios: ['claude', 'openai', 'cartesia'].filter(faltan),
+    opcionales: ['jamendo', 'freesound'].filter(faltan),
+  };
+}
+
+async function retomarInicio() {
+  conmutarConfig(false);
+  const vista = estadoConfig();
+  if (!vista.ficha) await cargarClaves().catch(() => {});
+  if (!vista.cli) await cargarCuentasCLI();
+  const { necesarios, opcionales } = pasosPendientesInicio();
+  const id = necesarios[0] || opcionales[0];
+  abrirInicio(id ? TARJETAS_INICIO.findIndex(t => t.id === id) : 0);
+}
+
+/* El botón de la barra, sólo mientras falte algo NECESARIO. Por las opcionales
+   no aparece: un aviso fijo por algo que se puede dejar es un aviso que se
+   aprende a no mirar (lo mismo que «Saltar por ahora», arriba). Mientras la
+   guía está abierta sobra. */
+function actualizarBotonGuia() {
+  const boton = $('#btn-guia');
+  if (!boton) return;
+  const vista = estadoConfig();
+  if (!vista.ficha || !vista.cli) { boton.classList.add('oculto'); return; }
+  const { necesarios } = pasosPendientesInicio();
+  boton.textContent = necesarios.length === 1
+    ? 'Completar configuración (falta 1)'
+    : `Completar configuración (faltan ${necesarios.length})`;
+  boton.classList.toggle('oculto', !necesarios.length || INICIO.abierta);
 }
 
 function abrirInicio(paso) {
@@ -10434,6 +10493,7 @@ function abrirInicio(paso) {
     document.body.appendChild(h('div', { id: 'inicio' }, h('div', { clase: 'cuadro' })));
   }
   pintarInicio();
+  actualizarBotonGuia();
   // las claves y las cuentas se piden aparte y repintan al llegar
   cargarClaves();
   refrescarEstadoAsistente();
@@ -10443,6 +10503,7 @@ function cerrarInicio(marcarVisto) {
   INICIO.abierta = false;
   const capa = $('#inicio');
   if (capa) capa.remove();
+  actualizarBotonGuia();
   if (marcarVisto) {
     pedir(API.ajustes(), { method: 'PUT', cuerpo: { onboarding_visto: true } })
       .catch(e => console.error(e));
@@ -10793,10 +10854,7 @@ function tarjetaFreeSoundInicio() {
 
 function tarjetaFinalInicio() {
   const ficha = estadoConfig().ficha || {};
-  const cli = estadoConfig().cli;
-  const estado = ASISTENTE.estado;
-  const cuentas = (cli && cli.cuentas) || [];
-  const claude = cuentas.some(c => c.sesion && c.sesion.conectada) || !!(estado && estado.listo);
+  const claude = claudeConectadoInicio();
   const fila = (nombre, puesta, opcional) => h('div', { clase: 'inicio-hecho' },
     pastillaEstado(puesta ? 'ok' : (opcional ? 'parcial' : 'error'),
       puesta ? 'puesta' : (opcional ? 'para luego' : 'sin poner')),
