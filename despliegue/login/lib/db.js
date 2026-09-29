@@ -97,6 +97,12 @@ const stmt = {
   ),
   // Las cuentas contra las que se comprueba la contrasena (ver lib/acceso.js).
   listActive: db.prepare('SELECT * FROM users WHERE is_active = 1 ORDER BY id'),
+  // La cuenta por la que se entra con correo: vale el correo o el nombre, para
+  // que las cuentas del CLI (`estudio`, sin correo) sigan entrando.
+  findActiveByLogin: db.prepare(
+    'SELECT * FROM users WHERE is_active = 1 AND ' +
+    '(username = @login COLLATE NOCASE OR email = @login COLLATE NOCASE) ORDER BY id LIMIT 1'
+  ),
   // El bloqueo del acceso entero.
   bloqueoLeer:  db.prepare('SELECT * FROM bloqueo WHERE id = 1'),
   bloqueoFallo: db.prepare(`
@@ -158,7 +164,20 @@ function limpiarBloqueo() {
   stmt.bloqueoLimpiar.run();
 }
 
+/**
+ * La primera cuenta, la que se crea desde la pantalla de acceso. Contar y
+ * crear van en la MISMA transaccion: con dos altas a la vez, la segunda ve la
+ * cuenta de la primera y no crea nada. Devuelve la fila creada, o null si ya
+ * habia alguna cuenta.
+ */
+const crearPrimeraCuenta = db.transaction((fila) => {
+  if (stmt.countUsers.get().n > 0) return null;
+  const { lastInsertRowid } = stmt.insertUser.run(fila);
+  return stmt.findById.get(lastInsertRowid);
+});
+
 module.exports = {
   db, stmt, lockRemainingMinutes,
   minutosDeBloqueo, registrarFallo, bloquearAcceso, limpiarBloqueo,
+  crearPrimeraCuenta,
 };

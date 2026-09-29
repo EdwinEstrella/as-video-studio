@@ -1,10 +1,17 @@
 /* Studio Videos IA — logica del formulario de acceso.
-   Solo se pide la contraseña: ella dice de qué cuenta es (lib/acceso.js). */
+   Correo y contraseña. Sin ninguna cuenta, el mismo formulario la crea
+   (`primeraVez` de /api/csrf → /api/alta), como la primera vez de n8n. */
 (function () {
   'use strict';
 
   const form       = document.getElementById('loginForm');
+  const email      = document.getElementById('email');
   const password   = document.getElementById('password');
+  const repetir    = document.getElementById('repetir');
+  const campoRepetir = document.getElementById('campoRepetir');
+  const titulo     = document.getElementById('titulo');
+  const subtitulo  = document.getElementById('subtitulo');
+  const recuperacion = document.getElementById('recuperacion');
   const submit     = document.getElementById('submit');
   const submitText = document.getElementById('submitText');
   const errorBox   = document.getElementById('error');
@@ -14,8 +21,25 @@
   const eyeClosed  = document.getElementById('eyeClosed');
   const panelLink  = document.getElementById('panelLink');
 
-  let csrfToken = null;
-  let saliendo  = false;
+  let csrfToken  = null;
+  let saliendo   = false;
+  let primeraVez = false;
+
+  /* --- la primera vez: crear la cuenta ------------------------------------ */
+  /* Sin cuentas no hay nada que recuperar, así que la ayuda de la contraseña
+     olvidada se esconde; y se pide repetirla, que no hay otra forma de saber
+     que se tecleó la que se quería. */
+  function modoAlta(activo) {
+    primeraVez = activo;
+    titulo.textContent = activo ? 'Crea tu cuenta' : 'Inicia sesión';
+    subtitulo.textContent = activo
+      ? 'Primera vez en AS Video Studio: con este correo y esta contraseña entrarás a partir de ahora.'
+      : 'AS Video Studio';
+    campoRepetir.classList.toggle('is-hidden', !activo);
+    if (recuperacion) recuperacion.classList.toggle('is-hidden', activo);
+    password.autocomplete = activo ? 'new-password' : 'current-password';
+    setLoading(false);
+  }
 
   /* --- por donde se ha entrado -------------------------------------------- */
   /* Hay dos versiones del estudio en el mismo dominio (la 1 en la raiz, la 2 en
@@ -46,6 +70,7 @@
       const res  = await fetch('/api/csrf', { credentials: 'same-origin' });
       const data = await res.json();
       csrfToken = data.csrfToken || null;
+      if (data.primeraVez !== primeraVez) modoAlta(!!data.primeraVez);
       const panel = (data.recuperacion || {}).panel;
       if (panelLink && panel && /^https:\/\/hpanel\.hostinger\.com\//.test(panel)) {
         panelLink.href = panel;
@@ -70,7 +95,11 @@
   function setLoading(loading) {
     submit.disabled = loading;
     password.disabled = loading;
-    submitText.textContent = loading ? 'Comprobando…' : 'Entrar';
+    email.disabled = loading;
+    repetir.disabled = loading;
+    submitText.textContent = loading
+      ? (primeraVez ? 'Creando…' : 'Comprobando…')
+      : (primeraVez ? 'Crear cuenta' : 'Entrar');
 
     const old = submit.querySelector('.spinner');
     if (old) old.remove();
@@ -93,17 +122,35 @@
   });
 
   password.addEventListener('input', clearError);
+  email.addEventListener('input', clearError);
+  repetir.addEventListener('input', clearError);
 
   /* --- envío -------------------------------------------------------------- */
   form.addEventListener('submit', async function (event) {
     event.preventDefault();
     clearError();
 
-    const pass = password.value;
+    const pass   = password.value;
+    const correo = email.value.trim();
 
+    if (!correo) {
+      showError('Escribe tu correo.');
+      email.focus();
+      return;
+    }
     if (!pass) {
       showError('Escribe tu contraseña.');
       password.focus();
+      return;
+    }
+    if (primeraVez && pass.length < 12) {
+      showError('La contraseña necesita al menos 12 caracteres.');
+      password.focus();
+      return;
+    }
+    if (primeraVez && pass !== repetir.value) {
+      showError('Las dos contraseñas no coinciden.');
+      repetir.focus();
       return;
     }
 
@@ -112,12 +159,12 @@
     try {
       if (!csrfToken) await fetchCsrf();
 
-      let res = await send(pass);
+      let res = await send(correo, pass);
 
       // Si el token había caducado (sesión reiniciada), lo renovamos y reintentamos una vez.
       if (res.status === 403) {
         await fetchCsrf();
-        res = await send(pass);
+        res = await send(correo, pass);
       }
 
       const data = await res.json().catch(() => ({}));
@@ -131,9 +178,13 @@
         return;
       }
 
+      // 409: alguien creó la cuenta mientras tanto. Se vuelve al login normal.
+      if (res.status === 409) modoAlta(false);
       showError(data.error || 'No se ha podido iniciar sesión. Inténtalo de nuevo.');
-      password.value = '';
-      password.focus();
+      if (!primeraVez) {
+        password.value = '';
+        password.focus();
+      }
     } catch {
       showError('No hay conexión con el servidor. Comprueba tu red e inténtalo de nuevo.');
     } finally {
@@ -144,15 +195,15 @@
     }
   });
 
-  function send(pass) {
-    return fetch('/api/login', {
+  function send(correo, pass) {
+    return fetch(primeraVez ? '/api/alta' : '/api/login', {
       method: 'POST',
       credentials: 'same-origin',
       headers: {
         'Content-Type': 'application/json',
         'X-CSRF-Token': csrfToken || '',
       },
-      body: JSON.stringify({ password: pass, next: destino() }),
+      body: JSON.stringify({ email: correo, password: pass, next: destino() }),
     });
   }
 })();

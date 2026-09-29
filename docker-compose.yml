@@ -124,9 +124,10 @@ services:
       - traefik.http.routers.asvs-login.entrypoints=websecure
       - traefik.http.routers.asvs-login.tls.certresolver=letsencrypt
       - traefik.http.routers.asvs-login.service=asvs-login
-      # El intento de contraseña, aparte: primera barrera de fuerza bruta antes
-      # de llegar a Node (12 por minuto y ráfaga de 5, como en nginx).
-      - "traefik.http.routers.asvs-login-intento.rule=Host(`${DOMINIO}`) && Path(`/api/login`)"
+      # El intento de contraseña y el alta de la primera cuenta, aparte: primera
+      # barrera de fuerza bruta antes de llegar a Node (12 por minuto y ráfaga
+      # de 5, como en nginx).
+      - "traefik.http.routers.asvs-login-intento.rule=Host(`${DOMINIO}`) && (Path(`/api/login`) || Path(`/api/alta`))"
       - traefik.http.routers.asvs-login-intento.priority=100
       - traefik.http.routers.asvs-login-intento.entrypoints=websecure
       - traefik.http.routers.asvs-login-intento.tls.certresolver=letsencrypt
