@@ -104,9 +104,12 @@ app.get('/api/health', (req, res) => {
 // sesion, nginx convierte el 401 en un 302 a /login con `error_page`; Traefik
 // no: devuelve al navegador lo que se le conteste aqui, tal cual. Asi que esa
 // redireccion la hace el propio acceso, y el 401 de nginx no cambia.
+// Va ABSOLUTA y sacada de APP_URL: Traefik resuelve un Location relativo contra
+// la direccion del forwardAuth y mandaria al navegador a `http://asvs-login:3000`.
+// De APP_URL y no del Host, que lo pone quien llama.
 app.get('/api/_auth', (req, res) => {
   if (!req.session || !req.session.userId || !req.session.username) {
-    if (req.query.redirigir) return res.redirect(302, '/login');
+    if (req.query.redirigir) return res.redirect(302, `${config.appUrl}/login`);
     return res.status(401).end();
   }
   res.set('X-Studio-User', req.session.username);
