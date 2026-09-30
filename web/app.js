@@ -2420,6 +2420,74 @@ async function guardarMotorImagen(motor) {
 }
 
 
+async function guardarCadenaImagen(cadena) {
+  const vista = estadoConfig();
+  try {
+    const r = await pedir(API.ajustes(),
+                          { method: 'PUT', cuerpo: { cadena_imagen: cadena } });
+    vista.ajustes = { ...(vista.ajustes || {}), ajustes: r.ajustes, costes: r.costes };
+  } catch (e) {
+    vista.error = e.message;
+  }
+  repintarClaves();
+}
+
+/* La cadena con un motor movido un puesto arriba (-1) o abajo (+1). */
+function cadenaMovida(cadena, indice, salto) {
+  const lista = cadena.slice();
+  const destino = indice + salto;
+  if (destino < 0 || destino >= lista.length) return lista;
+  const [movido] = lista.splice(indice, 1);
+  lista.splice(destino, 0, movido);
+  return lista;
+}
+
+/* LA CADENA DE MOTORES: con qué se dibuja CADA imagen. Se prueba en este orden
+ * y dibuja el primero que tenga hueco; si se queda sin cupo o sin saldo, la
+ * misma imagen sigue con el siguiente, y la siguiente vuelve a empezar por
+ * arriba. A diferencia del motor por defecto, esto vale YA para todos los
+ * vídeos: no toca la firma de ninguna imagen, así que no deja nada obsoleto.
+ * Un motor quitado de la cadena no se usa nunca. */
+function bloqueCadenaImagen() {
+  const ajustes = (estadoConfig().ajustes || {}).ajustes || {};
+  const cadena = Array.isArray(ajustes.cadena_imagen) ? ajustes.cadena_imagen : ['agy', 'openai'];
+  const nombres = { agy: 'Google (agy)', openai: 'OpenAI (API)' };
+  const caja = h('div', { clase: 'cadena-imagen' },
+    h('div', { clase: 'meta' },
+      'Con qué se dibuja cada imagen, en este orden: si el de arriba se queda sin '
+      + 'cupo o sin saldo, la imagen sigue con el siguiente, y cuando vuelve se '
+      + 'vuelve a él. Vale para todos los vídeos y no rehace nada de lo ya hecho.'));
+  cadena.forEach((motor, indice) => caja.appendChild(h('div', { clase: 'fila cadena-motor' },
+    h('span', { clase: 'cli-puesto' }, `${indice + 1}.º`),
+    h('span', { clase: 'crece' }, nombres[motor] || motor),
+    h('button', {
+      clase: 'mini fantasma', title: 'Subir: se prueba antes', disabled: indice === 0,
+      onclick: () => guardarCadenaImagen(cadenaMovida(cadena, indice, -1)),
+    }, '↑'),
+    h('button', {
+      clase: 'mini fantasma', title: 'Bajar', disabled: indice >= cadena.length - 1,
+      onclick: () => guardarCadenaImagen(cadenaMovida(cadena, indice, 1)),
+    }, '↓'),
+    h('button', {
+      clase: 'mini fantasma', title: 'Dejarlo fuera: no dibujará nunca',
+      onclick: () => guardarCadenaImagen(cadena.filter(m => m !== motor)),
+    }, 'Quitar'))));
+  Object.keys(nombres).filter(m => !cadena.includes(m)).forEach(motor => caja.appendChild(
+    h('div', { clase: 'fila cadena-motor fuera' },
+      h('span', { clase: 'cli-puesto' }, '—'),
+      h('span', { clase: 'crece' }, `${nombres[motor]}: fuera de la cadena`),
+      h('button', {
+        clase: 'mini fantasma', title: 'Añadirlo al final de la cadena',
+        onclick: () => guardarCadenaImagen(cadena.concat([motor])),
+      }, 'Añadir'))));
+  if (!cadena.length) {
+    caja.appendChild(h('div', { clase: 'meta aviso' },
+      'Sin ningún motor en la cadena cada vídeo dibuja sólo con el suyo, sin respaldo.'));
+  }
+  return caja;
+}
+
+
 /* GOOGLE (agy) EN CONFIGURACIÓN: las cuentas en orden, con su salud.
  *
  * Mandan POR ORDEN, como las de Claude: la primera se usa siempre y las de
@@ -2507,6 +2575,7 @@ function seccionAgy() {
   caja.appendChild(h('div', { clase: 'meta' },
     'Es sólo el punto de partida de los vídeos nuevos: los que ya existen siguen '
     + 'con el motor con el que se hicieron.'));
+  caja.appendChild(bloqueCadenaImagen());
   return caja;
 }
 

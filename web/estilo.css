@@ -1994,6 +1994,10 @@ button.primario.grande { padding: 9px 18px; font-size: 14px; }
   font-variant-numeric: tabular-nums;
 }
 .cli-cuenta.manda .cli-puesto { color: var(--acento); }
+/* la cadena de motores de imagen: el orden en que se prueban */
+.cadena-imagen { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; }
+.cadena-motor { gap: 8px; align-items: center; }
+.cadena-motor.fuera { opacity: .6; }
 /* cuántas imágenes da cada cuenta de Google antes del cupo */
 .agy-contador { margin-top: 4px; font-variant-numeric: tabular-nums; }
 

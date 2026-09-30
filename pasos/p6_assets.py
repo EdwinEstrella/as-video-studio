@@ -2990,10 +2990,12 @@ def _producir_imagen(nombre, prompt, referencias, destino, p, rehacer=False,
             medios.copiar(cacheada, destino)
             return {"origen": "cache", "firma": firma, "coste": 0.0}
 
-    imagen = medios.motor_de_imagen(p)
+    # LA CADENA DE MOTORES decide quien dibuja ESTA imagen (Google, y OpenAI si
+    # Google esta sin cupo, segun Configuracion). La firma de arriba sigue
+    # siendo la del proyecto: dibuje quien dibuje, nada ya pagado se mueve.
     try:
-        png, meta = imagen.generar(prompt, referencias, quality=p["calidad"],
-                                   tamano=tamano)
+        png, meta = medios.generar_imagen(p, prompt, referencias,
+                                          quality=p["calidad"], tamano=tamano)
     except SystemExit as fallo:
         # el motor esta escrito como CLI y aborta con SystemExit (por ejemplo si
         # falta la clave); dentro de un hilo eso no lo captura nadie y el paso
@@ -3003,8 +3005,45 @@ def _producir_imagen(nombre, prompt, referencias, destino, p, rehacer=False,
     with open(destino, "wb") as fh:
         fh.write(png)
     medios.copiar(destino, cacheada)
-    return {"origen": "generada", "firma": firma, "coste": meta["coste"],
-            "segundos": meta["segundos"]}
+    salida = {"origen": "generada", "firma": firma, "coste": meta["coste"],
+              "segundos": meta["segundos"]}
+    if meta.get("motor"):
+        salida["motor"] = meta["motor"]
+    if meta.get("respaldo"):
+        salida["respaldo"] = meta["respaldo"]
+    return salida
+
+
+def _nota_de_respaldo(resultados):
+    """Lo que dibujo un motor de RESPALDO en esta tanda, dicho en una frase.
+
+    «12 imágenes con OpenAI porque Google estaba sin cupo (0,56 $)». Sin ella,
+    una tanda de un proyecto de Google que acaba costando dinero no diria por
+    que. Cadena vacia si todo lo dibujo el primero de la cadena.
+    """
+    grupos = {}
+    for ficha in (resultados or {}).values():
+        respaldo = ficha.get("respaldo") if isinstance(ficha, dict) else None
+        if ficha.get("origen") != "generada" or not isinstance(respaldo, dict):
+            continue
+        motor = respaldo.get("motor") or ficha.get("motor") or ""
+        grupo = grupos.setdefault(motor, {"n": 0, "usd": 0.0, "saltados": {}})
+        grupo["n"] += 1
+        grupo["usd"] += float(ficha.get("coste") or 0.0)
+        grupo["saltados"].update(respaldo.get("saltados") or {})
+    nombres = medios.NOMBRES_DE_IMAGEN
+    frases = []
+    for motor, grupo in grupos.items():
+        porque = " y ".join(
+            f"{nombres.get(n, n)} "
+            + ("estaba sin cupo" if "cupo" in str(m) else "no estaba disponible")
+            for n, m in grupo["saltados"].items())
+        frase = (f"{grupo['n']} {'imagen' if grupo['n'] == 1 else 'imágenes'} con "
+                 f"{nombres.get(motor, motor)}" + (f" porque {porque}" if porque else ""))
+        if grupo["usd"] > 0:
+            frase += f" ({grupo['usd']:.2f} $)".replace(".", ",")
+        frases.append(frase)
+    return "; ".join(frases)
 
 
 def _salidas_parciales(plan, resultados, inventario, necesarios, avisar):
@@ -4483,6 +4522,12 @@ def ejecutar(proyecto, params, avisar=None, unidades=None, solo_assets=False,
             f"({camaras['planos_repetidos']} seguidos de la misma familia), "
             f"{generadas} imagenes nuevas, {coste:.3f} USD"),
     }
+    # quien dibujo de respaldo, si alguien lo hizo: va en el resumen que se ve
+    # al acabar la tanda
+    respaldo = _nota_de_respaldo(rehechas)
+    if respaldo:
+        salidas["respaldo"] = respaldo
+        salidas["resumen"] += f" · {respaldo}"
     avisar(1.0, salidas["resumen"])
     # Los planos que este recorte ha dejado fuera. Van en el resultado para que
     # quien tiene el estado en la mano los DES-DECLARE: un id de plano es

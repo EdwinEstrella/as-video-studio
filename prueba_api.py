@@ -648,6 +648,139 @@ def probar_voz(cliente, pid):
     igual(respuesta.status_code, 400, "una duracion absurda da 400")
 
 
+def probar_regrabar_una_seccion(cliente, carpeta):
+    """Regrabar una seccion VERSIONA la toma cosida; no la deja en trabajo/.
+
+    Lo visto en produccion el 30-09: «Regenerar bloque y audio» sobre B001
+    acababa «listo», el texto nuevo llegaba a `params.guion.bloques`, y la toma
+    cosida se quedaba en `pasos/voz/trabajo/` sin que nadie la versionara. La
+    pantalla seguia sirviendo la v1 --con el texto VIEJO en el karaoke-- y la
+    voz, obsoleta para siempre: «la toma no corresponde al guion de ahora».
+
+    Y la otra mitad, que es la que cuesta dinero: versionar la voz no puede
+    mover la firma de ningun plano. Sin cambio de texto (el tartamudeo, que es
+    el uso de siempre) ninguno; con cambio, lo que mueve el guion y ni uno mas.
+    """
+    from nucleo.estado import Estado
+    from nucleo.proyecto import Proyecto
+
+    seccion("REGRABAR UNA SECCION DE LA TOMA")
+    respuesta, datos = cliente.post("/api/proyectos", {"nombre": "Regrabar seccion"})
+    pid = (datos.get("proyecto") or {}).get("id") or ""
+    ok(bool(pid), "se crea un proyecto para regrabar")
+    raiz = os.path.join(carpeta, pid)
+    sembrar(raiz)
+    respuesta, lanzado = cliente.post(f"/api/proyectos/{pid}/pasos/voz/ejecutar", {})
+    ficha = esperar_trabajo(cliente, lanzado["trabajo_id"])
+    igual(ficha["estado"], "listo", f"la toma de partida sale ({ficha.get('error')})")
+
+    proyecto = Proyecto(raiz)
+    estado = Estado(proyecto)
+    # dos planos pagados, como si `assets` ya hubiera corrido
+    estado.actualizar_params("assets", {"unidades": {"S001": {}, "S002": {}}})
+    estado.completar("assets", {"resumen": "semilla"},
+                     {"S001": {"png": "S001.png"}, "S002": {"png": "S002.png"}})
+    planos = ("S001", "S002")
+    firmas_antes = {u: estado.firma_unidad("assets", u) for u in planos}
+    guardadas_antes = {u: estado.salidas_unidad("assets", u) for u in planos}
+
+    with open(os.path.join(proyecto.ruta_paso("voz"), "audio_meta.json"),
+              encoding="utf-8") as fh:
+        meta = json.load(fh)
+    sec = next(s["id"] for s in meta["secciones"] if "B001" in s["bloques"])
+
+    def regrabar(etiqueta):
+        respuesta, lanzado = cliente.post(
+            f"/api/proyectos/{pid}/voz/secciones/{sec}/regrabar", {})
+        igual(respuesta.status_code, 202, f"{etiqueta}: regrabar responde 202")
+        ficha = esperar_trabajo(cliente, lanzado["trabajo_id"])
+        igual(ficha["estado"], "listo", f"{etiqueta}: acaba bien ({ficha.get('error')})")
+        return cliente.get(f"/api/proyectos/{pid}/pasos/voz")[1]
+
+    # ---- 1. el tartamudeo: se regraba sin tocar el texto
+    voz = regrabar("sin cambio de texto")
+    igual(voz["version_activa"], 2,
+          "la toma cosida es una VERSION nueva y activa, no un resto en trabajo/")
+    igual(voz["estado"], "listo", "y la voz queda al dia")
+    ok(not os.path.isdir(proyecto.ruta_trabajo("voz", crear=False)),
+       "y no queda ninguna toma huerfana en pasos/voz/trabajo/")
+    for u in planos:
+        igual(estado.firma_unidad("assets", u), firmas_antes[u],
+              f"regrabar sin cambiar el texto NO mueve la firma de {u}")
+
+    # ---- 2. con el texto de B001 cambiado a mano
+    nuevo = "Texto nuevo del primer bloque, dicho con otras palabras."
+    estado.actualizar_params("guion", {"bloques": {"B001": {"texto": nuevo}}})
+    firmas_editado = {u: estado.firma_unidad("assets", u) for u in planos}
+    voz = regrabar("con B001 reescrito")
+    igual(voz["version_activa"], 3, "otra version nueva, la 3")
+    igual(voz["estado"], "listo",
+          "y la voz AL DIA con el guion de ahora: se grabo con ese texto")
+    ok(estado.al_dia("voz"),
+       "sellada con la firma del guion corregido, no con la del arranque")
+    with open(os.path.join(proyecto.ruta_paso("voz"), "audio_meta.json"),
+              encoding="utf-8") as fh:
+        meta = json.load(fh)
+    igual(next(b["texto"] for b in meta["bloques"] if b["id"] == "B001"), nuevo,
+          "el audio_meta de la version ACTIVA trae el texto nuevo (el karaoke)")
+    ok(os.path.exists(os.path.join(proyecto.ruta_paso("voz"), "narracion.wav")),
+       "y su narracion.wav esta en la carpeta de la version activa")
+    with open(os.path.join(proyecto.ruta_paso("voz"), "guion_locutado.json"),
+              encoding="utf-8") as fh:
+        locutado = json.load(fh)
+    igual(next(b["texto"] for b in locutado["bloques"] if b["id"] == "B001"), nuevo,
+          "y guion_locutado.json dice con que texto se grabo esta toma")
+    igual(((estado.params("guion").get("bloques") or {}).get("B001") or {}).get("texto"),
+          nuevo, "la edicion del guion se queda como estaba")
+    for u in planos:
+        igual(estado.firma_unidad("assets", u), firmas_editado[u],
+              f"versionar la voz no mueve {u} mas alla de lo que ya movio el guion")
+        igual(estado.salidas_unidad("assets", u), guardadas_antes[u],
+              f"y lo pagado de {u} sigue en su sitio")
+
+    # ---- 3. el microcambio: el texto lo cambia el PROPIO trabajo, despues de
+    # que el gestor haya fotografiado la voz con el guion de antes. Es el caso
+    # de produccion. En proceso y con un doble del reescritor: no se llama a
+    # Claude, y lo que se mira es con que firma se sella la toma.
+    import app as servidor                                    # noqa: PLC0415
+    p4 = servidor.PASOS_MODULOS.p4_voz
+    reescrito = "Tercera forma de decir lo mismo del primer bloque."
+
+    def doble(bloques, ids, peticion, **_k):
+        return [dict(b, texto=reescrito) if b["id"] == "B001" else dict(b)
+                for b in bloques]
+
+    guardado = (p4.reescribir_bloques, os.environ.get("ESTUDIO_SIMULAR"))
+    p4.reescribir_bloques = doble
+    os.environ["ESTUDIO_SIMULAR"] = "1"
+    try:
+        ctx = servidor.Contexto(raiz)
+        tid = ctx.gestor.lanzar("regrabar_seccion", servidor._correr_regrabar,
+                                ctx, sec, "que no se trabe", {}, paso="voz")
+        fin = time.time() + 60
+        while (ctx.gestor.estado(tid)["estado"] not in ("listo", "error")
+               and time.time() < fin):
+            time.sleep(0.1)
+        ficha = ctx.gestor.estado(tid)
+    finally:
+        p4.reescribir_bloques = guardado[0]
+        if guardado[1] is None:
+            os.environ.pop("ESTUDIO_SIMULAR", None)
+        else:
+            os.environ["ESTUDIO_SIMULAR"] = guardado[1]
+    igual(ficha["estado"], "listo", f"el microcambio acaba bien ({ficha.get('error')})")
+    igual((ficha.get("resultado") or {}).get("bloques_cambiados"), ["B001"],
+          "y dice que bloque ha cambiado")
+    igual(((estado.params("guion").get("bloques") or {}).get("B001") or {}).get("texto"),
+          reescrito, "el microcambio viaja al guion")
+    igual(estado.proyecto.version_activa("voz"), 4, "la toma es la version 4")
+    igual(estado.estado_de("voz"), "listo",
+          "y la voz AL DIA aunque el texto cambiara despues de arrancar")
+    ok(estado.al_dia("voz"),
+       "sellada con el guion que de verdad se locuto, no con el del arranque")
+    cliente.delete(f"/api/proyectos/{pid}")
+
+
 def probar_bitacora(cliente, pid):
     seccion("BITACORA")
     respuesta, datos = cliente.get(f"/api/proyectos/{pid}/bitacora")
@@ -3631,6 +3764,7 @@ def main():
         probar_archivos(cliente, pid, salidas)
         probar_feedback(cliente, pid)
         probar_voz(cliente, pid)
+        probar_regrabar_una_seccion(cliente, carpeta)
         probar_bitacora(cliente, pid)
         probar_presets_canal(cliente)
         probar_modo_light(cliente)

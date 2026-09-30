@@ -1910,10 +1910,28 @@ def _correr_regrabar(avisar, ctx, seccion_id, peticion, ajuste):
             if bloque["id"] in cambiados:
                 ediciones[bloque["id"]] = {"texto": bloque["texto"]}
         ctx.estado.actualizar_params("guion", {"bloques": ediciones})
+        # Y SE VUELVE A FOTOGRAFIAR LA ENTRADA. El gestor marco la voz al
+        # arrancar, con el guion de ANTES del microcambio, y `completar` sella la
+        # version con esa foto: la toma quedaria declarada como grabada con un
+        # texto que ya no dice, o sea obsoleta nada mas nacer. Esta toma se ha
+        # grabado con el texto de ahora, y eso es lo que tiene que decir.
+        ctx.estado.marcar_ejecutando("voz")
+    # con que texto se grabo, igual que lo deja `p4_voz.ejecutar`: es el «antes»
+    # que lee `conservar.guion_locutado`, y cada version lleva el suyo
+    PASOS_MODULOS.comun.escribir_json(
+        os.path.join(destino, "guion_locutado.json"), {"bloques": nuevos})
+    # LA TOMA COSIDA SE VERSIONA, como cualquier toma. Se quedaba en trabajo/
+    # sin que nadie la recogiera: el trabajo acababa «listo», el guion ya decia
+    # lo nuevo, y la pantalla seguia sirviendo la version de antes --con el
+    # texto viejo en el karaoke-- y la voz obsoleta para siempre. Mismas salidas
+    # que el paso entero y aligeradas igual (ver `_correr_paso`).
+    ligeras, _recortadas = _aligerar(salidas)
+    version = ctx.estado.completar("voz", ligeras)
     ctx.bitacora.anotar("seccion_regrabada", "voz", {
         "seccion": seccion_id, "peticion": peticion[:200],
-        "bloques_cambiados": cambiados})
+        "bloques_cambiados": cambiados, "version": version})
     salidas["bloques_cambiados"] = cambiados
+    salidas["version"] = version
     return salidas
 
 

@@ -197,8 +197,177 @@ def motor_de_imagen(p=None):
     por un camino lateral --normalizar una referencia, una lamina de moodboard,
     una correccion--: ese era el fallo de tenerlo escrito a mano en cada sitio.
     `p` son los params de `assets` (o cualquier dict con `motor_imagen`).
+
+    LA UNICA EXCEPCION es `generar_imagen`, la cadena de motores: al DIBUJAR un
+    plano puede hacerlo otro motor si el del proyecto no tiene cupo, y solo si
+    ese otro esta en la cadena que la persona dejo en Configuracion.
     """
     return motor(ruta_motor_de_imagen(p))
+
+
+# ------------------------------------------------ la cadena de motores de imagen
+#
+# Una tanda no se para mientras algun motor pueda dibujar. Antes de CADA imagen
+# se recorre la cadena (`ajustes.cadena_imagen`, Google y luego OpenAI por
+# defecto) y dibuja el primero que tenga hueco AHORA; si falla por cupo, saldo o
+# sesion, la MISMA imagen sigue con el siguiente. Cada imagen vuelve a empezar
+# por arriba: cuando a Google le vuelve el cupo, las siguientes vuelven a el.
+#
+# LO QUE NO CAMBIA: el param `motor_imagen` del proyecto. Entra en la firma de
+# cada imagen (`p6_assets._firma_de_imagen`), y la firma se sigue calculando con
+# el, dibuje quien dibuje: nada de lo ya pagado queda obsoleto por un respaldo.
+
+#: Los motores que puede haber en la cadena, con su ruta y su nombre en pantalla.
+RUTAS_DE_IMAGEN = {"agy": MOTORES_DE_IMAGEN["agy"], "openai": MOTOR_DE_IMAGEN_POR_DEFECTO}
+NOMBRES_DE_IMAGEN = {"agy": "Google", "openai": "OpenAI"}
+
+
+class SinMotorDisponible(RuntimeError):
+    """Ningun motor de la cadena puede dibujar ahora. El mensaje dice por que."""
+
+
+def _ajustes():
+    try:
+        from . import ajustes                        # noqa: PLC0415
+    except ImportError:
+        import ajustes                               # noqa: PLC0415
+    return ajustes
+
+
+def _nombre_propio(p):
+    return "agy" if ruta_motor_de_imagen(p) == MOTORES_DE_IMAGEN["agy"] else "openai"
+
+
+def cadena_de_imagen(p=None):
+    """Los motores que se prueban, en orden, para dibujar. -> ["agy", "openai"]
+
+    Sin cadena (la persona los quito todos) queda el del proyecto, solo: es lo
+    que habia antes de que existiera la cadena.
+    """
+    try:
+        cadena = [m for m in _ajustes().cadena_imagen() if m in RUTAS_DE_IMAGEN]
+    except Exception:                                          # noqa: BLE001
+        cadena = []
+    return cadena or [_nombre_propio(p)]
+
+
+def _disponible(modulo):
+    """(bool, por que no). Un motor que no sabe decirlo se da por disponible."""
+    mirar = getattr(modulo, "disponible", None)
+    if not callable(mirar):
+        return True, ""
+    try:
+        libre, motivo = mirar()
+    except Exception as fallo:                                 # noqa: BLE001
+        return False, str(fallo)
+    return bool(libre), str(motivo or "")
+
+
+def _conectado(nombre):
+    """Si el motor tiene algo detras. Uno sin conectar se salta EN SILENCIO: no
+    es un respaldo que contar, es que nunca estuvo en juego."""
+    return agy_conectado() if nombre == "agy" else openai_conectado()
+
+
+#: Los fallos con los que la imagen pasa al siguiente motor: no se arreglan
+#: reintentando con el mismo (cupo, cuentas apartadas, sesion, saldo, clave).
+_TIPOS_DE_SALTO = ("cupo", "sin_cuentas", "sesion", "capacidad")
+
+
+def _salta(modulo, fallo):
+    if getattr(fallo, "tipo", None) in _TIPOS_DE_SALTO:
+        return True
+    if type(fallo).__name__ == "SinSaldo" or isinstance(fallo, SystemExit):
+        return True
+    # y cualquier otro fallo tras el que el motor se declara fuera
+    return not _disponible(modulo)[0]
+
+
+def _llamar(nombre, modulo, prompt, referencias, esperar, **kwargs):
+    if nombre == "agy" and callable(getattr(modulo, "disponible", None)):
+        kwargs["esperar"] = esperar
+    png, meta = modulo.generar(prompt, referencias, **kwargs)
+    meta = dict(meta) if isinstance(meta, dict) else {}
+    meta["motor"] = nombre
+    return png, meta
+
+
+def generar_imagen(p, prompt, referencias, **kwargs):
+    """Dibuja UNA imagen con el primer motor de la cadena que pueda. -> (png, meta)
+
+    `meta["motor"]` dice quien la dibujo, y `meta["respaldo"]` --solo si se salto
+    a alguien que estaba conectado-- a quien y por que. El coste lo sigue
+    anotando el medidor en el `generar` de cada motor, asi que lo que dibuja
+    OpenAI en un proyecto de Google se anota como OpenAI y con su importe.
+
+    Google NO espera a que vuelva una cuenta apartada si hay otro motor libre
+    detras. Si no hay ninguno, el motor del proyecto se llama como siempre
+    (Google espera con su tope), y si tampoco puede, `SinMotorDisponible` dice
+    por que esta fuera cada uno.
+    """
+    cadena = cadena_de_imagen(p)
+    propio = _nombre_propio(p)
+    if len(cadena) == 1:
+        # un solo motor: lo de siempre, con sus errores de siempre
+        return _llamar(cadena[0], motor(RUTAS_DE_IMAGEN[cadena[0]]), prompt,
+                       referencias, True, **kwargs)
+    modulos = {n: motor(RUTAS_DE_IMAGEN[n]) for n in cadena}
+    motivos, saltados, probados = {}, {}, set()
+    for indice, nombre in enumerate(cadena):
+        modulo = modulos[nombre]
+        if id(modulo) in probados:
+            continue
+        libre, motivo = _disponible(modulo)
+        if not libre:
+            motivos[nombre] = motivo
+            if _conectado(nombre):
+                saltados[nombre] = motivo
+            continue
+        detras = any(_disponible(modulos[n])[0] for n in cadena[indice + 1:]
+                     if id(modulos[n]) not in probados and n not in motivos)
+        probados.add(id(modulo))
+        try:
+            png, meta = _llamar(nombre, modulo, prompt, referencias,
+                                not detras, **kwargs)
+        except (Exception, SystemExit) as fallo:               # noqa: BLE001
+            if not _salta(modulo, fallo):
+                raise
+            motivos[nombre] = _disponible(modulo)[1] or _corto(fallo)
+            saltados[nombre] = motivos[nombre]
+            print(f"[imagen] {NOMBRES_DE_IMAGEN[nombre]} no puede "
+                  f"({motivos[nombre]}): la imagen sigue con el siguiente motor",
+                  flush=True)
+            continue
+        return png, _con_respaldo(meta, nombre, saltados)
+
+    # nadie parecia libre: el motor del proyecto, como antes de la cadena
+    if propio in cadena and id(modulos[propio]) not in probados:
+        probados.add(id(modulos[propio]))
+        try:
+            png, meta = _llamar(propio, modulos[propio], prompt, referencias,
+                                True, **kwargs)
+        except (Exception, SystemExit) as fallo:               # noqa: BLE001
+            if not _salta(modulos[propio], fallo):
+                raise
+            motivos[propio] = _disponible(modulos[propio])[1] or _corto(fallo)
+        else:
+            return png, _con_respaldo(meta, propio, saltados)
+    raise SinMotorDisponible(
+        "ningún motor de imágenes puede dibujar ahora ("
+        + "; ".join(f"{NOMBRES_DE_IMAGEN[n]}: {motivos.get(n) or 'no disponible'}"
+                    for n in cadena)
+        + "). Lo ya generado no se pierde ni se vuelve a pagar.")
+
+
+def _con_respaldo(meta, nombre, saltados):
+    saltados = {n: m for n, m in saltados.items() if n != nombre}
+    if saltados:
+        meta["respaldo"] = {"motor": nombre, "saltados": saltados}
+    return meta
+
+
+def _corto(fallo, tope=160):
+    return " ".join(str(fallo).split())[:tope]
 
 
 # ---------------------------------------------- con que se dibuja un proyecto NUEVO
