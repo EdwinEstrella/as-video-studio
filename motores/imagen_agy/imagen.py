@@ -391,6 +391,25 @@ _PISTAS_SERVIDOR = ("internal error", "internal server", "server error",
                     "unavailable")
 
 
+def _cupo_en_respuesta(texto):
+    """Si agy, en vez de la imagen, ha CONTADO que el modelo no tiene cupo. -> bool
+
+    `clasificar` no mira la respuesta del modelo, y con razon: una imagen que
+    hablara de «cuotas» no es un cupo. Pero cuando NO hay imagen, la respuesta
+    es el parte del fallo, y agy lo cuenta en el idioma de la cuenta: «se ha
+    alcanzado el límite de cuota del modelo… 429 Too Many Requests»
+    (29-09-2026). Sin esto salia como `otro`, que no aparta la cuenta, y cada
+    reintento volvia a la PRIMERA: con dos cuentas, la segunda no entraba nunca.
+
+    Pide el codigo o la palabra de la API, no una mencion suelta a «límite»: un
+    cupo falso aparta la cuenta horas.
+    """
+    bajo = " ".join(str(texto or "").lower().split())
+    return bool(re.search(r"\b429\b", bajo)
+                or "resource_exhausted" in bajo or "resource exhausted" in bajo
+                or re.search(r"\b(quota|cuota)\b", bajo))
+
+
 def clasificar(texto):
     """(tipo, espera_s) a partir de lo que dijo agy.
 
@@ -768,9 +787,15 @@ def _una_llamada(cuenta, prompt, refs, tamano, timeout_s):
                     fichero = encontrados[0]
                     break
         if not fichero:
-            raise _error_de(
-                "otro", "agy no generó el archivo de imagen esperado. Respuesta: "
-                + _limpio(payload.get("response"), 200), cuenta)
+            respuesta = str(payload.get("response") or "")
+            texto = ("agy no generó el archivo de imagen esperado. Respuesta: "
+                     + _limpio(respuesta, 200))
+            if _cupo_en_respuesta(respuesta):
+                # con su espera, o la cuenta se apartaria lo de un error de
+                # servidor (segundos) y el reintento volveria a ella
+                raise _error_de("cupo", texto, cuenta,
+                                espera_del_mensaje(respuesta.lower()) or ESPERA_CUPO_S)
+            raise _error_de("otro", texto, cuenta)
 
         dimension = DIMENSIONES.get(tamano, (1536, 1024))
         try:
