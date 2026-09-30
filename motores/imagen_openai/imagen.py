@@ -354,6 +354,22 @@ def cuentas_para_la_pantalla():
     return fichas
 
 
+def disponible():
+    """Si ahora mismo hay una clave con la que dibujar. -> (bool, por que no)
+
+    Lo mira la cadena de motores antes de cada imagen. No llama a la API: sale
+    de lo que ya se sabe de cada cuenta (sin credito, clave rechazada).
+    """
+    if not _claves_declaradas():
+        return False, "sin clave"
+    cuentas = _cuentas()
+    if any(not c.sin_saldo and not c.clave_rechazada for c in cuentas):
+        return True, ""
+    if all(c.clave_rechazada for c in cuentas):
+        return False, "clave rechazada"
+    return False, "sin saldo"
+
+
 def _elegir_cuenta(cuantas):
     """La cuenta que puede salir a llamar ANTES. Las sin saldo no juegan."""
     todas = _cuentas()

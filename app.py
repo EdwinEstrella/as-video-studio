@@ -6419,6 +6419,8 @@ def quitar_cuenta_agy(cid: str):
         except login.ErrorLogin:
             borrada = False
     _motor_agy().olvidar(cid)
+    # el contador de imagenes sobrevive a volver a entrar, no a quitar la cuenta
+    _motor_agy().olvidar_contador(cid)
     anotar_global("agy_quitar", {"cuenta": cid, "carpeta_borrada": borrada})
     return {"ok": True, "carpeta_borrada": borrada, **_estado_agy()}
 

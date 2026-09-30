@@ -1994,6 +1994,8 @@ button.primario.grande { padding: 9px 18px; font-size: 14px; }
   font-variant-numeric: tabular-nums;
 }
 .cli-cuenta.manda .cli-puesto { color: var(--acento); }
+/* cuántas imágenes da cada cuenta de Google antes del cupo */
+.agy-contador { margin-top: 4px; font-variant-numeric: tabular-nums; }
 
 /* El paso a paso del acceso. Se despliega DENTRO de la tarjeta de su cuenta:
    con dos accesos abiertos a la vez, un panel suelto no diría de cuál es. */

@@ -2576,6 +2576,8 @@ function tarjetaCuentaAgy(cuenta, indice, cuentas) {
         onclick: () => quitarCuentaAgy(cuenta),
       }, '×')));
 
+  const contador = lineaContadorAgy(cuenta.contador);
+  if (contador) tarjeta.appendChild(contador);
   if (cuenta.guardada) {
     const aviso = avisoSalud(salud);
     if (aviso) tarjeta.appendChild(aviso);
@@ -2590,6 +2592,30 @@ function tarjetaCuentaAgy(cuenta, indice, cuentas) {
     tarjeta.appendChild(pasoDelAccesoAgy(cuenta, cuenta.intento, false));
   }
   return tarjeta;
+}
+
+/* Cuántas imágenes ha dado la cuenta y tras cuántas llegó al cupo: nadie lo
+   publica, se aprende contando (el motor lo apunta en contador_agy.json). Se
+   omite lo que no tiene dato; sin ninguna imagen, no se pinta nada. */
+function lineaContadorAgy(contador) {
+  if (!contador) return null;
+  const partes = [];
+  if (contador.total > 0) {
+    partes.push(`${miles(contador.total)} ${contador.total === 1 ? 'imagen generada' : 'imágenes generadas'}`);
+  }
+  if (contador.hoy > 0 && contador.hoy !== contador.total) partes.push(`${miles(contador.hoy)} hoy`);
+  const topes = contador.ultimos_topes || [];
+  if (topes.length) {
+    partes.push(`${miles(contador.tramo || 0)} desde el último límite`);
+    partes.push(`el último límite llegó tras ${miles(topes[topes.length - 1].imagenes)}`);
+  }
+  if (!partes.length) return null;
+  return h('div', {
+    clase: 'meta agy-contador',
+    title: topes.length > 1
+      ? `Los últimos límites llegaron tras ${topes.map(t => miles(t.imagenes)).join(', ')} imágenes`
+      : 'Imágenes que ha dibujado esta cuenta de Google con el Estudio',
+  }, partes.join(' · '));
 }
 
 /* EL ACCESO, con la ventana de 60 s a la vista. agy espera el código UN minuto
@@ -11445,6 +11471,8 @@ function tarjetaGoogleInicio() {
       pastillaSalud(salud),
       h('span', { clase: 'meta' },
         `Entrado como ${cuenta.etiqueta || 'tu cuenta de Google'}.`)));
+    const contador = lineaContadorAgy(cuenta.contador);
+    if (contador) partes.push(contador);
     const aviso = avisoSalud(salud);
     if (aviso) partes.push(aviso);
     partes.push(h('div', { clase: 'fila' },

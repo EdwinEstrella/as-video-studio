@@ -440,6 +440,8 @@ def cuentas_para_pantalla():
             "guardada": cuenta["entrada"],
             "intento": mirar(cuenta["id"]),
             "salud": salud,
+            # imagenes que lleva y tras cuantas llego al cupo (None: ninguna)
+            "contador": motor.contador_de(cuenta["id"]),
             # segundos que le quedan apartada (cupo, saturacion), si lo esta
             "apartada_s": int(bloqueo[1] - ahora)
             if bloqueo and bloqueo[0] == "espera" else 0,

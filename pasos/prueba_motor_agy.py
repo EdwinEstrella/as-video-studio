@@ -474,6 +474,311 @@ def prueba_reparto():
         ok(len(LLAMADAS) <= 3, f"con tope de intentos ({len(LLAMADAS)})")
 
 
+def _sin_contador():
+    if os.path.exists(M.ruta_contador()):
+        os.remove(M.ruta_contador())
+
+
+def prueba_contador():
+    seccion("4m] contador de imagenes por cuenta (cuantas da cada una antes del cupo)")
+    preparar_motor()
+    refs = [png(os.path.join(CARPETA, "refs", f"r{i}.png")) for i in range(3)]
+    montar_cuentas(["a1", "a2"])
+    _sin_contador()
+    igual(M.contador_de("a1"), None, "sin imagenes todavia: sin contador")
+    ok(os.path.dirname(M.ruta_contador()) == os.path.dirname(M.ruta_salud())
+       and os.path.basename(M.ruta_contador()) == "contador_agy.json",
+       "vive en <secretos>/contador_agy.json, junto a la salud y FUERA de ella")
+
+    t0 = RELOJ[0]
+    for _ in range(3):
+        M.generar("x", refs)
+    c = M.contador_de("a1")
+    igual((c["total"], c["tramo"]), (3, 3), "tres imagenes buenas: total 3, tramo 3")
+    igual(c["tramo_desde"], int(t0), "el tramo empieza con la primera imagen contada")
+    igual(c["ultimos_topes"], [], "sin topes todavia")
+    igual(c["hoy"], 3, "y las de hoy")
+    igual(M.contador_de("a2"), None, "la 2.ª no ha dibujado nada")
+
+    # un fallo que no es cupo no cuenta ni imagen ni tope
+    GUION["a1"] = ["servidor"]
+    M.generar("x", refs)
+    c = M.contador_de("a1")
+    igual((c["total"], c["tramo"], c["ultimos_topes"]), (3, 3, []),
+          "un error del servidor no suma imagen ni apunta tope")
+    igual(M.contador_de("a2")["total"], 1, "la imagen reintentada cuenta en la que la hizo")
+
+    # el cupo cierra el tramo: se apunta cuantas dio y se empieza de cero
+    RELOJ[0] += 100
+    montar_cuentas(["a1", "a2"])
+    GUION["a1"] = ["cupo"]
+    M.generar("x", refs)
+    c = M.contador_de("a1")
+    igual(len(c["ultimos_topes"]), 1, "el cupo apunta un tope")
+    tope = c["ultimos_topes"][0]
+    igual(tope["imagenes"], 3, "con las imagenes del tramo (3)")
+    igual((tope["desde"], tope["cuando"]), (int(t0), int(RELOJ[0])),
+          "desde cuando y cuando llego")
+    igual((c["total"], c["tramo"], c["tramo_desde"]), (3, 0, int(RELOJ[0])),
+          "el total se queda, el tramo vuelve a 0 y empieza ahora")
+
+    # un segundo cupo sin haber dibujado nada no es otro tope (la cuenta no
+    # llego a recuperarse: dos llamadas en paralelo chocan con el mismo limite)
+    montar_cuentas(["a1", "a2"])
+    GUION["a1"] = ["cupo"]
+    M.generar("x", refs)
+    igual(len(M.contador_de("a1")["ultimos_topes"]), 1,
+          "un cupo con el tramo a 0 no apunta otro tope")
+
+    # probar habla con el modelo de chat: su cupo NO es el de imagenes
+    antes_a2 = M.contador_de("a2")["total"]
+    real_ejecutar = M._ejecutar
+    M._ejecutar = lambda cmd, **kw: (1, json.dumps({"status": "ERROR", "error":
+                                                    "RESOURCE_EXHAUSTED quota exhausted"}), "", "")
+    try:
+        M.probar({"id": "a2", "etiqueta": "la del curro", "home": ""})
+    finally:
+        M._ejecutar = real_ejecutar
+    c2 = M.contador_de("a2")
+    igual((c2["total"], c2["ultimos_topes"]), (antes_a2, []),
+          "Probar con cupo agotado no apunta tope ni cuenta imagen")
+
+    # sobrevive a volver a entrar: olvidar() borra la salud, no el contador
+    M.olvidar("a1")
+    igual(M.contador_de("a1")["total"], 3, "volver a entrar (olvidar) conserva el contador")
+    ok(M.salud_de("a1") is None, "(y la salud si se borra)")
+
+    # solo se guardan los ultimos topes
+    for i in range(M.MAX_TOPES + 3):
+        M.contar_imagen("a3")
+        M.contar_tope("a3")
+    igual(len(M.contador_de("a3")["ultimos_topes"]), M.MAX_TOPES,
+          f"se guardan los {M.MAX_TOPES} ultimos topes")
+
+    # "hoy" es del dia local: al dia siguiente vuelve a 0 sin tocar el total
+    RELOJ[0] += 2 * 24 * 3600
+    c = M.contador_de("a1")
+    igual((c["hoy"], c["total"]), (0, 3), "otro dia: hoy vuelve a 0, el total se queda")
+
+    # quitar la cuenta si lo tira
+    ok(M.olvidar_contador("a3"), "quitar la cuenta borra su contador")
+    igual(M.contador_de("a3"), None, "y ya no esta")
+    ok(not M.olvidar_contador("a3"), "quitarla dos veces no rompe nada")
+
+    # la pantalla lo ve junto a la salud, sin lanzar nada
+    LLAMADAS.clear()
+    estado = login_agy.estado_para_pantalla()
+    por_id = {c["id"]: c for c in estado["cuentas"]}
+    igual(por_id["a1"]["contador"]["total"], 3, "GET /api/claves/agy lleva el contador por cuenta")
+    igual(por_id["a1"]["contador"]["ultimos_topes"][0]["imagenes"], 3, "con sus topes")
+    igual(por_id["a2"]["contador"]["total"], antes_a2, "y el de la 2.ª")
+    igual(LLAMADAS, [], "sin lanzar agy")
+
+    # la ruta de quitar la cuenta lo tira; la de salir (cerrar sesion) NO
+    src = open(os.path.join(RAIZ, "app.py"), encoding="utf-8").read()
+    quitar = src.split("def quitar_cuenta_agy")[1].split("\n@app")[0]
+    salir = src.split("def salir_cuenta_agy")[1].split("\n@app")[0]
+    ok("olvidar_contador(cid)" in quitar, "quitar la cuenta (DELETE) borra su contador")
+    ok("olvidar_contador" not in salir, "cerrar la sesion NO borra el contador")
+
+    # la pantalla lo pinta en Configuracion y en la guia
+    js = open(os.path.join(RAIZ, "web", "app.js"), encoding="utf-8").read()
+    ok(js.count("lineaContadorAgy(") >= 3,
+       "app.js pinta el contador (lineaContadorAgy) en Configuracion y en la guia")
+    _sin_contador()
+
+
+class OpenAIFalso:
+    """El motor de OpenAI de mentira: dibuja, cobra en su `meta` y se queda sin
+    saldo cuando se le dice. Nada sale a la red."""
+    saldo = True
+    llamadas = []
+
+    @staticmethod
+    def disponible():
+        return (True, "") if OpenAIFalso.saldo else (False, "sin saldo")
+
+    @staticmethod
+    def generar(prompt, referencias, quality="low", tamano="apaisado"):
+        if not OpenAIFalso.saldo:
+            raise RuntimeError("la cuenta de OpenAI se ha quedado sin credito")
+        OpenAIFalso.llamadas.append(prompt)
+        return png_bytes((64, 48), (0, 200, 0)), {
+            "coste": 0.006, "segundos": 1.0, "quality": quality,
+            "tamano": "1536x1024", "modelo": "gpt-image", "refs": len(referencias),
+            "usage": {"input_tokens": 5114, "output_tokens": 272}}
+
+    @staticmethod
+    def normalizar(ruta, cache_dir, lado_max=1024):
+        return ruta
+
+
+def prueba_cadena_de_motores():
+    seccion("4n] cadena de motores: una tanda no se para mientras alguien pueda dibujar")
+    preparar_motor()
+    refs = [png(os.path.join(CARPETA, "refs", f"r{i}.png")) for i in range(3)]
+    ruta_openai = medios.MOTOR_DE_IMAGEN_POR_DEFECTO
+    original_motor = medios.motor
+    original_instalado = M.instalado
+    medios.motor = lambda ruta: OpenAIFalso if ruta == ruta_openai else original_motor(ruta)
+    M.instalado = lambda: True
+    OpenAIFalso.saldo = True
+    OpenAIFalso.llamadas.clear()
+    p_agy = {"motor_imagen": "agy", "calidad": "low"}
+    try:
+        # el ajuste: Google primero, OpenAI al final, y se valida al guardar
+        igual(ajustes.leer()["cadena_imagen"], ["agy", "openai"],
+              "por defecto la cadena es Google y luego OpenAI")
+        igual(ajustes.guardar({"cadena_imagen": ["openai", "agy"]})["cadena_imagen"],
+              ["openai", "agy"], "se puede reordenar")
+        igual(ajustes.guardar({"cadena_imagen": ["agy"]})["cadena_imagen"], ["agy"],
+              "y dejar un motor fuera")
+        for mala in (["midjourney"], ["agy", "agy"], "agy", [None]):
+            try:
+                ajustes.guardar({"cadena_imagen": mala})
+                ok(False, f"cadena {mala!r} se rechaza")
+            except ValueError:
+                ok(True, f"cadena {mala!r} se rechaza")
+        ajustes.guardar({"cadena_imagen": ["agy", "openai"]})
+
+        # 1. Google tiene cupo: dibuja Google
+        montar_cuentas(["a1"])
+        png1, meta = medios.generar_imagen(p_agy, "uno", refs, quality="low",
+                                           tamano="apaisado")
+        igual((meta["motor"], LLAMADAS, OpenAIFalso.llamadas), ("agy", ["a1"], []),
+              "Google con cupo: dibuja Google y OpenAI ni se entera")
+        ok("respaldo" not in meta, "y no hay respaldo que contar")
+
+        # 2. Google se queda sin cupo: LA MISMA imagen la dibuja OpenAI
+        LLAMADAS.clear()
+        GUION["a1"] = ["cupo"]
+        t0 = RELOJ[0]
+        _, meta = medios.generar_imagen(p_agy, "dos", refs, quality="low",
+                                        tamano="apaisado")
+        igual(meta["motor"], "openai", "cupo en Google: la misma imagen la dibuja OpenAI")
+        igual(OpenAIFalso.llamadas, ["dos"], "una llamada a OpenAI, con ese prompt")
+        igual(LLAMADAS, ["a1"], "Google se intento una vez")
+        ok(RELOJ[0] - t0 < 1, "sin esperar a que Google vuelva (habia otro motor)")
+        ok("sin cupo" in meta["respaldo"]["saltados"]["agy"],
+           f"y se dice por que se salto Google: {meta['respaldo']['saltados']}")
+        igual(p_agy["motor_imagen"], "agy", "el param del proyecto NO se reescribe")
+
+        # 3. la siguiente imagen: Google sigue apartado, OpenAI directamente
+        LLAMADAS.clear()
+        _, meta = medios.generar_imagen(p_agy, "tres", refs, quality="low",
+                                        tamano="apaisado")
+        igual((meta["motor"], LLAMADAS), ("openai", []),
+              "con Google apartado ni se le llama: OpenAI a la primera")
+
+        # 4. vuelve el cupo de Google: la siguiente imagen vuelve a Google
+        RELOJ[0] += 5 * 3600
+        OpenAIFalso.llamadas.clear()
+        _, meta = medios.generar_imagen(p_agy, "cuatro", refs, quality="low",
+                                        tamano="apaisado")
+        igual((meta["motor"], OpenAIFalso.llamadas), ("agy", []),
+              "vuelve el cupo de Google: la siguiente imagen vuelve a Google")
+
+        # 5. Google saturado unos segundos y OpenAI libre: no se espera
+        montar_cuentas(["a1"])
+        GUION["a1"] = ["capacidad"]
+        t0 = RELOJ[0]
+        _, meta = medios.generar_imagen(p_agy, "cinco", refs, quality="low",
+                                        tamano="apaisado")
+        igual(meta["motor"], "openai", "Google saturado: OpenAI, sin esperar los 45 s")
+        ok(RELOJ[0] - t0 < 1, f"no se durmio ({RELOJ[0] - t0:.0f} s)")
+
+        # 6. nadie puede: un error que dice por que esta fuera cada uno
+        montar_cuentas(["a1"])
+        GUION["a1"] = ["cupo_sin_fecha"]
+        OpenAIFalso.saldo = False
+        try:
+            medios.generar_imagen(p_agy, "seis", refs, quality="low", tamano="apaisado")
+            ok(False, "sin ningun motor libre la imagen falla")
+        except medios.SinMotorDisponible as err:
+            texto = str(err)
+            ok("Google" in texto and "sin cupo" in texto
+               and "OpenAI" in texto and "sin saldo" in texto,
+               f"el error dice por que esta fuera cada motor: {texto}")
+            ok(re.search(r"hasta \d\d:\d\d", texto) is not None,
+               "y hasta cuando esta Google sin cupo")
+        OpenAIFalso.saldo = True
+
+        # 7. OpenAI fuera de la cadena: un proyecto de Google NUNCA llama a OpenAI
+        ajustes.guardar({"cadena_imagen": ["agy"]})
+        montar_cuentas(["a1"])
+        GUION["a1"] = ["cupo"]
+        OpenAIFalso.llamadas.clear()
+        try:
+            medios.generar_imagen(p_agy, "siete", refs, quality="low", tamano="apaisado")
+            ok(False, "sin OpenAI en la cadena y Google sin cupo, falla")
+        except M.ErrorAgy:
+            ok(True, "sin OpenAI en la cadena falla como siempre (el error de Google)")
+        igual(OpenAIFalso.llamadas, [], "y OpenAI no se toca")
+        ajustes.guardar({"cadena_imagen": ["agy", "openai"]})
+
+        # 8. el coste: lo que dibuja OpenAI en un proyecto de Google se anota
+        #    como OpenAI, con su importe
+        anotados = []
+        original_anotar = coste._anotar
+        original_generar = OpenAIFalso.generar
+        coste._anotar = lambda proveedor, operacion, unidad=None, **campos: (
+            anotados.append((proveedor, campos)) or {"usd": 0.047, "usd_estimado": True})
+        OpenAIFalso.generar = staticmethod(coste._medir_imagen(original_generar))
+        try:
+            montar_cuentas(["a1"])
+            GUION["a1"] = ["cupo"]
+            _, meta = medios.generar_imagen(p_agy, "ocho", refs, quality="low",
+                                            tamano="apaisado")
+        finally:
+            coste._anotar = original_anotar
+            OpenAIFalso.generar = original_generar
+        igual([a[0] for a in anotados], ["openai"],
+              "la imagen de OpenAI en un proyecto de Google se anota como OpenAI")
+        igual(meta["coste"], 0.047, "con su importe de verdad (entrada incluida)")
+
+        # 9. p6: la firma de la imagen es la del PROYECTO, dibuje quien dibuje
+        banco = os.path.join(CARPETA, "banco_cadena")
+        os.makedirs(banco, exist_ok=True)
+        p = dict(p6_assets.PARAMS_POR_DEFECTO)
+        p.update({"banco_imagenes": banco, "motor_imagen": "agy",
+                  "calidad": "low", "imagenes_previas": []})
+        firma_antes = p6_assets._firma_de_imagen("plano", refs, "apaisado", p)
+        montar_cuentas(["a1"])
+        GUION["a1"] = ["cupo"]
+        meta = p6_assets._producir_imagen("S001", "plano", refs,
+                                          os.path.join(banco, "S001.png"), p)
+        igual((meta["origen"], meta["motor"]), ("generada", "openai"),
+              "p6: con Google sin cupo el plano lo dibuja OpenAI")
+        igual(meta["firma"], firma_antes,
+              "y la firma es la de siempre: nada ya pagado queda obsoleto")
+        igual(p6_assets._firma_de_imagen("plano", refs, "apaisado", p), firma_antes,
+              "ni la firma del proyecto cambia despues del respaldo")
+        igual(p["motor_imagen"], "agy", "ni su param")
+        ok(meta.get("respaldo") and meta["coste"] == 0.006,
+           "la ficha del plano dice quien lo dibujo, por que y cuanto costo")
+
+        # 10. el resumen de la tanda lo cuenta
+        nota = p6_assets._nota_de_respaldo({
+            f"escena:S{i:03d}": {"origen": "generada", "motor": "openai", "coste": 0.0467,
+                                 "respaldo": {"motor": "openai",
+                                              "saltados": {"agy": "todas sin cupo hasta 14:30"}}}
+            for i in range(12)})
+        igual(nota, "12 imágenes con OpenAI porque Google estaba sin cupo (0,56 $)",
+              "el resumen de la tanda dice cuantas dibujo OpenAI, por que y cuanto")
+        igual(p6_assets._nota_de_respaldo({"escena:S001": {"origen": "generada",
+                                                           "motor": "agy"}}), "",
+              "sin respaldo, sin nota")
+
+        # 11. la pantalla ensena la cadena y deja reordenarla
+        js = open(os.path.join(RAIZ, "web", "app.js"), encoding="utf-8").read()
+        ok("cadena_imagen" in js and "guardarCadenaImagen(" in js,
+           "Configuracion ensena la cadena de motores y la guarda")
+    finally:
+        medios.motor = original_motor
+        M.instalado = original_instalado
+        ajustes.guardar({"cadena_imagen": ["agy", "openai"]})
+
+
 def prueba_referencias():
     seccion("5] todas las referencias van, en su orden")
     preparar_motor()
@@ -996,6 +1301,8 @@ def main():
         prueba_recorte()
         prueba_errores()
         prueba_reparto()
+        prueba_contador()
+        prueba_cadena_de_motores()
         prueba_referencias()
         prueba_concurrencia()
         prueba_claves()

@@ -30,6 +30,10 @@ lo lee por CONTRATO.
                                   la pantalla lo lee: preguntar «¿tiene sesion?»
                                   lanzando agy gastaria cupo cada vez que se abre
                                   Configuracion.
+  - `<secretos>/contador_agy.json` -> cuantas imagenes ha dibujado cada cuenta
+                                  y tras cuantas llego al cupo. Va APARTE de la
+                                  salud a proposito: `olvidar` borra la salud al
+                                  volver a entrar, y la cuenta hay que conservarla.
 
 EL REPARTO ENTRE CUENTAS (modelado en spigot/accountPool.ts)
 ------------------------------------------------------------
@@ -87,6 +91,9 @@ DEFECTO = "__defecto__"
 ESPERA_CAPACIDAD_S = 45
 ESPERA_SERVIDOR_S = 20
 ESPERA_CUPO_S = 5 * 3600
+
+#: Cuantos topes de cupo se recuerdan por cuenta en el contador.
+MAX_TOPES = 10
 
 SIN_VENTANA = {}
 if os.name == "nt":
@@ -179,6 +186,10 @@ def ruta_claves():
 
 def ruta_salud():
     return os.path.join(carpeta_secretos(), "salud_agy.json")
+
+
+def ruta_contador():
+    return os.path.join(carpeta_secretos(), "contador_agy.json")
 
 
 def _leer_json(ruta):
@@ -290,7 +301,11 @@ def salud_leer():
 
 
 def _escribir_salud(datos):
-    ruta = ruta_salud()
+    _escribir_json(ruta_salud(), datos)
+
+
+def _escribir_json(ruta, datos):
+    """A un temporal y se sustituye de golpe: nunca queda un JSON a medias."""
     os.makedirs(os.path.dirname(ruta), exist_ok=True)
     temporal = "%s.%d.%d.tmp" % (ruta, os.getpid(), threading.get_ident() & 0xffff)
     with open(temporal, "w", encoding="utf-8") as fh:
@@ -334,6 +349,106 @@ def olvidar(cuenta_id):
     return habia
 
 
+# ------------------------------------------------------------------ contador
+#
+# Cuantas imagenes da cada cuenta de Google antes de que el modelo de imagen
+# diga que no hay cupo (429 RESOURCE_EXHAUSTED). Nadie lo publica: se aprende
+# contando. Por cuenta:
+#
+#   total          imagenes buenas desde que se cuenta
+#   tramo          imagenes desde el ultimo tope (o desde que se empezo a contar)
+#   tramo_desde    epoch en que empezo el tramo
+#   ultimos_topes  [{imagenes, desde, cuando}] los MAX_TOPES ultimos cupos
+#   dia, hoy       las imagenes del dia local `dia`
+#
+# Solo cuenta `generar`: `probar` habla con el modelo de chat, que tiene su
+# propio cupo, y su 429 no dice nada del de imagenes.
+
+def contador_leer():
+    return _leer_json(ruta_contador())
+
+
+def _dia(epoch):
+    return time.strftime("%Y-%m-%d", time.localtime(epoch))
+
+
+def contador_de(cuenta_id):
+    """El contador de esa cuenta, o None si nunca ha dibujado nada.
+
+    `hoy` sale a 0 si lo apuntado es de otro dia: se mira al leer, no hace
+    falta que nadie lo ponga a cero a medianoche.
+    """
+    ficha = contador_leer().get(cuenta_id)
+    if not isinstance(ficha, dict):
+        return None
+    ficha = dict(ficha)
+    ficha.setdefault("ultimos_topes", [])
+    if ficha.get("dia") != _dia(_reloj()):
+        ficha["hoy"] = 0
+    return ficha
+
+
+def _cambiar_contador(cuenta_id, cambio):
+    """Es contabilidad: si no se puede escribir se dice y se sigue. Que falle
+    el contador no puede tirar una imagen ya generada (y pagada en cupo)."""
+    with _LOCK:
+        datos = contador_leer()
+        ficha = datos.get(cuenta_id)
+        if not isinstance(ficha, dict):
+            ficha = {"total": 0, "tramo": 0, "tramo_desde": int(_reloj()),
+                     "ultimos_topes": [], "dia": "", "hoy": 0}
+        cambio(ficha)
+        datos[cuenta_id] = ficha
+        try:
+            _escribir_json(ruta_contador(), datos)
+        except OSError as fallo:
+            print(f"[imagen_agy] no se pudo apuntar el contador: {fallo}", flush=True)
+    return dict(ficha)
+
+
+def contar_imagen(cuenta_id):
+    """Una imagen buena mas para esa cuenta. -> el contador escrito"""
+    def sumar(ficha):
+        ahora = _reloj()
+        ficha["total"] = int(ficha.get("total") or 0) + 1
+        ficha["tramo"] = int(ficha.get("tramo") or 0) + 1
+        hoy = _dia(ahora)
+        ficha["hoy"] = (int(ficha.get("hoy") or 0) if ficha.get("dia") == hoy else 0) + 1
+        ficha["dia"] = hoy
+    return _cambiar_contador(cuenta_id, sumar)
+
+
+def contar_tope(cuenta_id):
+    """La cuenta ha llegado al cupo de imagenes: se cierra el tramo. -> contador
+
+    Con el tramo a 0 no se apunta nada: la cuenta no llego a recuperarse (dos
+    llamadas en paralelo que chocan con el MISMO limite), y un «llego tras 0»
+    haria creer que la cuenta no da ni una imagen.
+    """
+    def cerrar(ficha):
+        tramo = int(ficha.get("tramo") or 0)
+        if not tramo:
+            return
+        ahora = int(_reloj())
+        topes = list(ficha.get("ultimos_topes") or [])
+        topes.append({"imagenes": tramo, "desde": int(ficha.get("tramo_desde") or ahora),
+                      "cuando": ahora})
+        ficha["ultimos_topes"] = topes[-MAX_TOPES:]
+        ficha["tramo"] = 0
+        ficha["tramo_desde"] = ahora
+    return _cambiar_contador(cuenta_id, cerrar)
+
+
+def olvidar_contador(cuenta_id):
+    """Solo al QUITAR la cuenta. Volver a entrar o salir no lo tocan. -> bool"""
+    with _LOCK:
+        datos = contador_leer()
+        habia = datos.pop(cuenta_id, None) is not None
+        if habia:
+            _escribir_json(ruta_contador(), datos)
+    return habia
+
+
 def bloqueo_de(ficha, ahora=None):
     """Por que una cuenta no se puede usar ahora: None | ('sesion',) | ('espera', hasta)"""
     if not isinstance(ficha, dict):
@@ -344,6 +459,42 @@ def bloqueo_de(ficha, ahora=None):
     if hasta and hasta > (ahora if ahora is not None else _reloj()):
         return ("espera", hasta)
     return None
+
+
+def disponible():
+    """Si ahora mismo se puede dibujar con alguna cuenta. -> (bool, por que no)
+
+    Es lo que mira la CADENA de motores (`medios.generar_imagen`) antes de cada
+    imagen, y por eso solo lee ficheros: preguntarselo a agy gastaria cupo.
+    Una cuenta apartada (cupo, saturacion) NO esta disponible aunque vuelva en
+    45 s: con otro motor libre en la cadena, esperar es parar la tanda.
+    """
+    if not instalado():
+        return False, "agy no está instalado"
+    cuentas = cuentas_usables()
+    if not cuentas:
+        return False, "ninguna cuenta con sesión"
+    salud = salud_leer()
+    ahora = _reloj()
+    if not cuentas_configuradas() and not isinstance(salud.get(DEFECTO), dict):
+        # la sesion de la maquina solo cuenta si alguna vez contesto: igual
+        # que `medios.agy_conectado`, sin lanzar agy para averiguarlo
+        return False, "la sesión por defecto de agy no se ha probado"
+    esperas = []
+    for cuenta in cuentas:
+        ficha = salud.get(cuenta["id"])
+        bloqueo = bloqueo_de(ficha, ahora)
+        if bloqueo is None:
+            return True, ""
+        if bloqueo[0] == "espera":
+            esperas.append((bloqueo[1], (ficha or {}).get("estado")))
+    if not esperas:
+        return False, "la sesión ha caducado en todas las cuentas"
+    hasta = min(h for h, _ in esperas)
+    cuando = time.strftime("%H:%M", time.localtime(hasta))
+    if all(estado == "cupo" for _, estado in esperas):
+        return False, f"todas sin cupo hasta {cuando}"
+    return False, f"todas apartadas hasta {cuando}"
 
 
 # ------------------------------------------------------------------ clasificar
@@ -603,8 +754,12 @@ def _espera_max():
         return 600.0
 
 
-def _tomar_cuenta():
-    """La cuenta con la que se llama ahora. Espera, con tope, si todas estan apartadas."""
+def _tomar_cuenta(esperar=True):
+    """La cuenta con la que se llama ahora. Espera, con tope, si todas estan apartadas.
+
+    Con `esperar=False` no duerme nada: si todas estan apartadas falla YA. Es lo
+    que pide la cadena de motores cuando hay otro motor libre detras.
+    """
     while True:
         cuentas = cuentas_usables()
         if not cuentas:
@@ -632,7 +787,7 @@ def _tomar_cuenta():
             raise err
         hasta, cuenta = min(esperas, key=lambda par: par[0])
         falta = hasta - ahora
-        if falta > _espera_max():
+        if falta > _espera_max() or not esperar:
             ficha = salud.get(cuenta["id"]) or {}
             clase = _CLASES.get({"cupo": "cupo", "capacidad": "capacidad",
                                  "tiempo": "tiempo"}.get(ficha.get("estado"), "servidor"))
@@ -813,12 +968,15 @@ def _una_llamada(cuenta, prompt, refs, tamano, timeout_s):
 
 
 def generar(prompt, referencias=None, *, quality="low", tamano="apaisado",
-            timeout_s=300, reintentos=None, **_ignorado):
+            timeout_s=300, reintentos=None, esperar=True, **_ignorado):
     """Genera una imagen con agy. -> (png_bytes, meta)
 
     Reintenta con la SIGUIENTE cuenta cuando una falla (ver la cabecera). `meta`
     lleva `usage` (los tokens de agy), como el motor de OpenAI: es lo que lee el
     medidor de coste.
+
+    `esperar=False`: con todas las cuentas apartadas se falla enseguida en vez
+    de esperar a la primera que vuelva (ver `_tomar_cuenta`).
     """
     referencias = [str(r) for r in (referencias or [])]
     faltan = [r for r in referencias if not os.path.exists(r)]
@@ -837,7 +995,7 @@ def generar(prompt, referencias=None, *, quality="low", tamano="apaisado",
     extra = 2 if reintentos is None else int(reintentos)
     fallos = []
     for intento in range(1, max(1, len(usables)) + extra + 1):
-        cuenta = _tomar_cuenta()
+        cuenta = _tomar_cuenta(esperar)
         try:
             with _semaforo():
                 png, payload, segundos = _una_llamada(
@@ -846,9 +1004,12 @@ def generar(prompt, referencias=None, *, quality="low", tamano="apaisado",
             err.cuenta = cuenta.get("id", "")
             fallos.append(err)
             _apuntar_fallo(cuenta, err, para="generar una imagen")
+            if err.tipo == "cupo":
+                contar_tope(cuenta["id"])
             print(f"[imagen_agy] {nombre_de(cuenta)}: {err}", flush=True)
             continue
         anotar(cuenta["id"], "ok", "", para="generar una imagen")
+        contar_imagen(cuenta["id"])
         usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
         return png, {
             "segundos": round(segundos, 1),

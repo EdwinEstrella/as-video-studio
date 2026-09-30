@@ -64,6 +64,12 @@ TOKENS_ENTRADA_POR_IMAGEN = 5114
 POR_DEFECTO = {
     "calidad_imagen": "low",
     "motor_imagen": "openai",
+    # LA CADENA DE MOTORES DE IMAGEN: en que orden se prueba cada motor al
+    # dibujar CADA imagen, y cuales entran (el que no esta, no se usa nunca).
+    # Al contrario que `motor_imagen`, esto SI se lee al generar, y puede: no
+    # entra en la firma de ninguna imagen (ver `medios.generar_imagen`), asi
+    # que cambiarlo no deja obsoleto nada de lo ya pagado.
+    "cadena_imagen": ["agy", "openai"],
     # Si ya se ha pasado por la guia de inicio (las tarjetas que piden las
     # claves al entrar por primera vez). Vive aqui y no en el navegador
     # porque es de la instalacion, no de la pantalla: desde el movil no hay
@@ -84,7 +90,24 @@ def leer():
     if salida.get("motor_imagen") not in MOTORES_IMAGEN:
         salida["motor_imagen"] = POR_DEFECTO["motor_imagen"]
     salida["onboarding_visto"] = bool(salida.get("onboarding_visto"))
+    try:
+        salida["cadena_imagen"] = _cadena_valida(salida.get("cadena_imagen"))
+    except ValueError:
+        salida["cadena_imagen"] = list(POR_DEFECTO["cadena_imagen"])
     return salida
+
+
+def _cadena_valida(valor):
+    """Una lista de motores de imagen, sin repetir. Vacia vale: solo el del proyecto."""
+    if not isinstance(valor, list):
+        raise ValueError("la cadena de motores es una lista")
+    for motor in valor:
+        if motor not in MOTORES_IMAGEN:
+            raise ValueError(
+                f"motor de imagen {motor!r}: solo {', '.join(MOTORES_IMAGEN)}")
+    if len(set(valor)) != len(valor):
+        raise ValueError("la cadena de motores no puede repetir un motor")
+    return list(valor)
 
 
 def guardar(cambios):
@@ -105,6 +128,8 @@ def guardar(cambios):
         if clave == "motor_imagen" and valor not in MOTORES_IMAGEN:
             raise ValueError(
                 f"motor de imagen {valor!r}: solo {', '.join(MOTORES_IMAGEN)}")
+        if clave == "cadena_imagen":
+            valor = _cadena_valida(valor)
         if clave == "onboarding_visto" and not isinstance(valor, bool):
             raise ValueError("onboarding_visto es verdadero o falso")
         actual[clave] = valor
@@ -120,6 +145,11 @@ def calidad_imagen():
 def motor_imagen():
     """El motor de imagen por defecto con el que arranca un proyecto nuevo."""
     return leer()["motor_imagen"]
+
+
+def cadena_imagen():
+    """El orden en que se prueban los motores de imagen al dibujar."""
+    return list(leer()["cadena_imagen"])
 
 
 def coste_por_imagen(calidad, tamano=TAMANO):
