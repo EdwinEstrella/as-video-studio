@@ -10116,13 +10116,13 @@ function mandosDeVozLight(ficha, voz) {
      sale en la lista. Lo que hay puesto y no está en el catálogo se enseña aquí
      (la del catálogo ya se ve marcada en su cuadrícula). */
   const fuera = !!(lista && voz.voz_id && !lista.some(v => v.id === voz.voz_id));
-  dentro.appendChild(campoVozIdLight(fuera ? voz.voz_id : '', id => {
+  dentro.appendChild(campoVozIdLight(fuera ? voz.voz_id : '', { elegir: id => {
     // el nombre pasa a ser el id: el que hubiera era de la voz anterior y una
     // etiqueta que no corresponde a la voz puesta es peor que ninguna (el
     // servidor ignora los valores vacios, asi que no se puede borrar)
     guardar({ voz_id: id, voz_nombre: id });
     repintarBloqueVoz(ficha);
-  }, false));
+  } }));
 
   dentro.appendChild(campoSelect('Velocidad', voz.velocidad || 'normal',
     VELOCIDADES.map(v => ({ valor: v, nombre: v })),
@@ -10246,12 +10246,12 @@ function avisoVocesLight(idioma) {
    pulsar «Generar». */
 const VOZ_ID_LIGHT = /^[A-Za-z0-9_-]{8,64}$/;
 
-/* `actual`: el id puesto ahora ('' si ninguno). `alElegir(id)` se llama con un id
-   válido. Con `permitirVacio`, vaciar el campo y pulsar el botón lo llama con ''
+/* `actual`: el id puesto ahora ('' si ninguno). `mandos.elegir` recibe un id
+   válido. Con `mandos.vacio`, vaciar el campo y pulsar el botón lo manda como ''
    (quitar la voz elegida a mano, en el formulario de crear); sin él, un campo
    vacío se dice y no hace nada — en un estilo que ya existe el servidor ignora
    los valores vacíos, así que «quitar» sería una promesa que no cumple. */
-function campoVozIdLight(actual, alElegir, permitirVacio) {
+function campoVozIdLight(actual, mandos) {
   const mensaje = h('div', { clase: 'pista' });
   const entrada = h('input', {
     type: 'text', clase: 'voz-id', spellcheck: 'false', autocomplete: 'off',
@@ -10260,7 +10260,7 @@ function campoVozIdLight(actual, alElegir, permitirVacio) {
   });
   const aplicar = () => {
     const id = entrada.value.trim();
-    if (!id && !permitirVacio) {
+    if (!id && !mandos.vacio) {
       mensaje.className = 'meta aviso';
       mensaje.textContent = 'Pega primero el id de la voz.';
       return;
@@ -10273,7 +10273,7 @@ function campoVozIdLight(actual, alElegir, permitirVacio) {
     }
     mensaje.className = 'pista';
     mensaje.textContent = id ? 'Voz puesta por su id.' : 'Voz quitada.';
-    alElegir(id);
+    mandos.elegir(id);
   };
   entrada.addEventListener('keydown', ev => {
     if (ev.key === 'Enter') { ev.preventDefault(); aplicar(); }
@@ -10332,11 +10332,11 @@ function selectorVozPropiaLight(e) {
       'No hay voces clonadas en esta cuenta de Cartesia: la voz se elige por la '
       + 'descripción de arriba. Si clonas una, aparecerá aquí.'));
   }
-  caja.appendChild(campoVozIdLight(enLista ? '' : e.voz_id, id => {
+  caja.appendChild(campoVozIdLight(enLista ? '' : e.voz_id, { vacio: true, elegir: id => {
     e.voz_id = id;
     if (desplegable) desplegable.value = propias.some(v => v.id === id) ? id : '';
     tocarEncargoLight();
-  }, true));
+  } }));
   return caja;
 }
 

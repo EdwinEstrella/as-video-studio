@@ -31,6 +31,7 @@ Salidas por escena: capas/<id>.svg, movimiento/<id>.json, hyper/<id>.png y
 previo/<id>.png (plano + capa compuestos para la pantalla de revision).
 """
 import os
+import pathlib
 import sys
 import time
 
@@ -904,6 +905,7 @@ def previsualizar(ruta_png, ruta_svg, destino, ruta_fija=None, mov=None,
     BUSCAR_ENTRADAS): esperar a ver que pilla la captura daba una previa distinta
     en cada pasada.
     """
+    _comprobar_plano(ruta_png)
     with open(ruta_svg, "r", encoding="utf-8") as fh:
         svg = fh.read()
     fija = ""
@@ -926,7 +928,7 @@ def previsualizar(ruta_png, ruta_svg, destino, ruta_fija=None, mov=None,
             f'transform-origin:0 0;'
             f'transform:translate({-x0 * escala:.3f}px,{-y0 * escala:.3f}px) '
             f'scale({escala:.6f})">'
-            f'<img src="file:///{ruta_png.replace(chr(92), "/")}" '
+            f'<img src="{_uri_de(ruta_png)}" '
             f'style="display:block;width:{lienzo[0]}px;height:{lienzo[1]}px">'
             f'<div style="position:absolute;left:0;top:0;'
             f'width:{lienzo[0]}px;height:{lienzo[1]}px">{svg}</div>'
@@ -942,17 +944,20 @@ def previsualizar(ruta_png, ruta_svg, destino, ruta_fija=None, mov=None,
     ruta_html = medios.escribir_texto(destino + ".html", html)
     medios.rasterizar(ruta_html, destino, ancho, alto, transparente=False)
     os.remove(ruta_html)
-    _comprobar_previa(destino)
     return destino
 
 
-#: El fondo del cuadro compuesto, en el HTML de arriba. Sirve de FIRMA: si la
-#: esquina no se parece a esto, lo que hay dentro no lo ha pintado esta funcion.
-FONDO_PREVIA = (0x0b, 0x0c, 0x09)
+def _uri_de(ruta):
+    """La ruta como URI `file:` bien escrita. -> str
+
+    A MANO NO: `file:///` + la ruta con las barras cambiadas deja sin escapar un
+    espacio, un `#` o un `%`, y Edge no encuentra un fichero que SI esta.
+    """
+    return pathlib.Path(os.path.abspath(ruta)).as_uri()
 
 
-def _comprobar_previa(destino):
-    """Levanta si el PNG compuesto no es el cuadro, sino otra cosa.
+def _comprobar_plano(ruta_png):
+    """Levanta si el plano que se va a componer no esta en el disco.
 
     EDGE NO FALLA CUANDO NO ENCUENTRA ALGO: pinta SU pagina de error --«File not
     found», casi blanca-- y la fotografia. El PNG aparece, `rasterizar` lo da
@@ -961,23 +966,15 @@ def _comprobar_previa(destino):
     versiones, todas de 27 KB, y nadie levanto en ningun sitio: se vieron
     MIRANDO la pantalla.
 
-    La firma es la esquina. Este HTML pinta el fondo a #0b0c09 y encima el plano
-    escalado, asi que la esquina de un cuadro de verdad es oscura o es imagen;
-    la de la pagina de error es casi blanca. No se mira el peso: un plano
-    legitimamente plano pesa poco y seria un falso positivo.
-
-    Levanta y no borra el PNG: quien llama lo recoge como aviso (ver `ejecutar`)
-    y asi queda en disco para poder mirarlo si alguien pregunta por que.
+    SE MIRA LA CAUSA ANTES, NO EL COLOR DESPUES. Esto miraba si la esquina del
+    PNG salia casi blanca, y un estilo sobre papel --stickman sobre fondo
+    crema, 29-09-2026-- tiene las seis laminas con la esquina por encima de 200:
+    el guardian tumbaba todas las muestras de un estilo bueno. Las dos formas de
+    que Edge no encuentre el plano son que no exista y que la URI este mal
+    escrita (`_uri_de`), y las dos se cierran aqui sin adivinar nada.
     """
-    try:
-        from PIL import Image                                 # noqa: PLC0415
-        esquina = Image.open(destino).convert("RGB").load()[5, 5]
-    except Exception:                                         # noqa: BLE001
-        return
-    if min(esquina) > 200:
-        raise RuntimeError(
-            f"la previa salio en blanco ({esquina}): Edge ha fotografiado una "
-            f"pagina de error en vez del cuadro")
+    if not ruta_png or not os.path.isfile(ruta_png):
+        raise RuntimeError(f"no esta el plano que habia que componer: {ruta_png}")
 
 
 # ------------------------------------------------------------------ capturas
