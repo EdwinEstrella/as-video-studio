@@ -852,6 +852,50 @@ def listar_proyectos():
 LARGO_MAXIMO_NOMBRE = 120
 
 
+def _params_de_imagen_nuevos(estricto=False, con_calidad=True):
+    """Los params de imagen con los que nace un proyecto NUEVO. -> {param: valor}
+
+    UN SOLO SITIO PARA LOS TRES CAMINOS que crean proyectos --el de siempre, el
+    taller de un estilo del modo light y el vídeo hecho desde un estilo--. Antes
+    solo lo hacia el primero, y los otros dos caian en OpenAI aunque la persona
+    solo hubiera conectado Google: el estilo moria dibujando sus laminas.
+
+    LA CALIDAD Y EL MOTOR SE ESCRIBEN AQUI, al crear, y no se leen al generar.
+    Leerlos al generar dejaria obsoletas las imagenes de todos los proyectos que
+    nunca los fijaron en cuanto alguien tocara el ajuste --`calidad` y
+    `motor_imagen` entran en la firma de cada imagen--, y eso es dinero. Escritos
+    aqui, lo viejo se queda como estaba y esto es solo el punto de partida del
+    proyecto nuevo. Nunca se llama sobre uno que ya existe.
+
+    EL MOTOR SALE DE CRUZAR LO ELEGIDO CON LO CONECTADO (ver
+    `medios.resolver_motor_de_imagen`): el elegido si tiene algo detras, el otro
+    si es el unico que lo tiene. Con `estricto`, sin ninguno se levanta un 409
+    ANTES de crear nada; sin el, se respeta lo elegido como siempre (el modo
+    editor tambien crea proyectos para trabajar sin generar imagenes).
+
+    `openai` no se escribe: es el valor por defecto del paso y escribirlo moveria
+    la firma de proyectos que jamas lo tuvieron.
+    """
+    params = {}
+    try:
+        if con_calidad:
+            params["calidad"] = AJUSTES.calidad_imagen()
+        elegido = AJUSTES.motor_imagen()
+    except Exception:  # noqa: BLE001
+        return params           # un ajuste ilegible no impide crear nada
+    motor = elegido
+    if PASOS_MODULOS is not None:
+        medios = PASOS_MODULOS.medios
+        try:
+            motor = medios.resolver_motor_de_imagen(elegido, medios.imagen_conectada())
+        except medios.SinMotorDeImagen as fallo:
+            if estricto:
+                raise ErrorApi(409, str(fallo))
+    if motor != "openai":
+        params["motor_imagen"] = motor
+    return params
+
+
 @app.post("/api/proyectos", status_code=201)
 def crear_proyecto(cuerpo: dict = Body(default=None)):
     """Crea un proyecto nuevo a partir de {"nombre"}."""
@@ -870,19 +914,13 @@ def crear_proyecto(cuerpo: dict = Body(default=None)):
     if isinstance(datos.get("config"), dict):
         ctx.proyecto.config.update(datos["config"])
         ctx.proyecto.guardar_config()
-    # LA CALIDAD DE IMAGEN SE ESCRIBE AQUI, al crear, y no se lee al generar.
-    # Leerla al generar dejaria obsoletas las imagenes de todos los proyectos
-    # que nunca la fijaron en cuanto alguien tocara el ajuste -- `calidad` entra
-    # en la firma de cada imagen --, y eso es dinero. Escrita aqui, lo viejo se
-    # queda como estaba y esto es solo el punto de partida del proyecto nuevo.
+    # Un ajuste ilegible no puede impedir crear un proyecto: se queda con el
+    # valor por defecto del paso, que es el que habia antes de todo esto.
     try:
-        params_assets = {"calidad": AJUSTES.calidad_imagen()}
-        if AJUSTES.motor_imagen() != "openai":
-            params_assets["motor_imagen"] = AJUSTES.motor_imagen()
-        ctx.estado.actualizar_params("assets", params_assets)
+        params_assets = _params_de_imagen_nuevos()
+        if params_assets:
+            ctx.estado.actualizar_params("assets", params_assets)
     except Exception:  # noqa: BLE001
-        # un ajuste ilegible no puede impedir crear un proyecto: se queda con
-        # el valor por defecto del paso, que es el que habia antes de todo esto
         pass
     ctx.bitacora.anotar("proyecto_creado", None, {"nombre": nombre, "id": proyecto.id})
     return {"proyecto": ficha_proyecto(ctx),
@@ -1759,22 +1797,22 @@ def catalogo_voces_global(idioma: str = Query(default=None),
                           nativas: int = Query(default=0),
                           solo_nativas: int = Query(default=0),
                           refrescar: int = Query(default=0)):
-    """Catalogo de voces de Cartesia, sin atarlo a ningun proyecto."""
+    """Catalogo de voces de Cartesia, sin atarlo a ningun proyecto.
+
+    SI CARTESIA FALLA NO DA 502: da 200 con las voces de ejemplo y el motivo en
+    `aviso`. Detras del proxy un 502 del origen lo sustituye una pagina de error
+    del propio proxy, el mensaje no llega al navegador y la pantalla acababa
+    diciendo «no hay voces clonadas» cuando lo que pasaba era otra cosa. El
+    SystemExit de los motores --escritos como CLI-- tambien se recoge alli
+    (`p4_voz.listar_voces_o_respaldo`).
+    """
     if PASOS_MODULOS is None:
         raise ErrorApi(503, f"los pasos no se han podido cargar: {ERROR_PASOS}")
-    try:
-        voces = PASOS_MODULOS.p4_voz.listar_voces(
-            idioma=idioma, refrescar=bool(refrescar),
-            solo_nativas=bool(nativas or solo_nativas))
-    # BaseException Y NO Exception: los motores estan escritos como CLI y abortan
-    # con SystemExit --«No encuentro CARTESIA_API_KEY»--, que no es un
-    # `Exception`. Se colaba por debajo, subia entera y el navegador recibia un
-    # 500 sin texto: la pantalla se quedaba en «cargando tus voces...» sin decir
-    # que lo que falta es la clave.
-    except (Exception, SystemExit) as fallo:  # noqa: BLE001
-        raise ErrorApi(502, f"no se ha podido leer el catalogo de voces: {fallo}")
+    voces, aviso = PASOS_MODULOS.p4_voz.listar_voces_o_respaldo(
+        idioma=idioma, refrescar=bool(refrescar),
+        solo_nativas=bool(nativas or solo_nativas))
     return {"voces": voces, "total": len(voces), "idioma": idioma,
-            "solo_nativas": bool(nativas or solo_nativas)}
+            "solo_nativas": bool(nativas or solo_nativas), "aviso": aviso}
 
 
 # ------------------------------------------------------------ voz descrita
@@ -6957,15 +6995,24 @@ def _light():
     return PASOS_MODULOS.presets_light
 
 
-def _encargo_o_400(cuerpo):
+def _encargo_o_400(cuerpo, minimo_imagenes=None):
     try:
-        return _light().validar_encargo(cuerpo)
+        return _light().validar_encargo(cuerpo, minimo_imagenes=minimo_imagenes)
     except Exception as fallo:                              # noqa: BLE001
         raise ErrorApi(400, str(fallo))
 
 
 def _crear_taller(encargo):
-    """Un proyecto oculto donde generar este preset. -> ctx"""
+    """Un proyecto oculto donde generar este preset. -> ctx
+
+    Nace con el motor de imagen que toque (`_params_de_imagen_nuevos`) y sin
+    ninguno conectado NO nace: el 409 sale ANTES de crear la carpeta, que si no
+    quedaria un taller suelto por cada intento. La calidad NO se escribe: las
+    laminas del estilo se dibujan a la que decide `_correr_light_referencias`, y
+    el preset congelaria despues la del ajuste de ESE dia como si fuera parte
+    del estilo, cuando lo que va con el estilo es el dibujo y no el presupuesto.
+    """
+    params_imagen = _params_de_imagen_nuevos(estricto=True, con_calidad=False)
     os.makedirs(raiz_proyectos(), exist_ok=True)
     base = f"taller {encargo['nombre']}"[:60]
     nombre, intento = base, 1
@@ -6979,6 +7026,8 @@ def _crear_taller(encargo):
     ctx = contexto(proyecto.id)
     ctx.proyecto.config[CONFIG_TALLER] = True
     ctx.proyecto.guardar_config()
+    if params_imagen:
+        ctx.estado.actualizar_params("assets", params_imagen)
     return ctx
 
 
@@ -7041,14 +7090,52 @@ def _aportadas_del_taller(ctx):
             if os.path.splitext(n)[1].lower() in EXT_APORTADAS]
 
 
-def _sembrar_aportadas(ctx, encargo):
-    """Mete en el taller las imagenes subidas, y vacia la carpeta de espera.
+def _aportadas_pedidas(encargo, taller=None):
+    """Las rutas del buzon de las imagenes que pide el encargo. -> [rutas]
+
+    NO SE TIRA EN SILENCIO NINGUNA QUE FALTE. Antes `_rutas_aportadas` saltaba
+    las que ya no estaban y el resto seguia: la guia recibia dos imagenes en
+    vez de las cinco que se veian en pantalla y morian con «hacen falta al
+    menos 3 fotogramas» despues de haber creado el taller. Ahora falta una y se
+    dice CUAL, antes de crear nada y de gastar nada, con las que faltan en
+    `faltan` para que la pantalla las quite de su lista.
+
+    CON `taller` (retomar) no traer ninguna nueva es una respuesta valida: se
+    sigue con las copias que el taller ya tiene. Traer unas si y otras no es
+    otra cosa --el encargo dice una lista y el buzon otra-- y se rechaza igual.
+    """
+    pedidas = [os.path.basename(str(n or "").strip())
+               for n in (encargo.get("estilo_imagenes") or [])]
+    rutas = _rutas_aportadas(pedidas)
+    hay = {os.path.basename(r) for r in rutas}
+    faltan = [n for n in pedidas if n not in hay]
+    if not faltan:
+        return rutas
+    if taller is not None and not rutas and _aportadas_del_taller(taller):
+        return []
+    if len(faltan) == 1:
+        mensaje = ("Ya no está una de las imágenes que adjuntaste: el servidor "
+                   "la ha perdido desde que la subiste. Quítala de la lista y "
+                   "vuelve a subirla.")
+    else:
+        mensaje = (f"Ya no están {len(faltan)} de las imágenes que adjuntaste: "
+                   f"el servidor las ha perdido desde que las subiste. Quítalas "
+                   f"de la lista y vuelve a subirlas.")
+    raise ErrorApi(400, mensaje, {"faltan": faltan})
+
+
+def _sembrar_aportadas(ctx, rutas):
+    """Copia al taller las imagenes del buzon. -> [rutas dentro del taller]
 
     EN EL TALLER: es lo que sobrevive al preset y lo que permite rehacer el
-    estilo sin volver a pedir nada. La carpeta de espera es un buzon, no un
-    almacen -- lo que se copia se borra de ahi, o se queda para siempre.
+    estilo sin volver a pedir nada.
+
+    EL BUZON NO SE VACIA AQUI. Se vaciaba al copiar, y si el intento fallaba
+    --un 403, un cupo, una red caida-- la pantalla seguia enseñando las mismas
+    miniaturas, volver a pulsar «Generar» mandaba los mismos nombres y el
+    servidor ya no tenia ninguno. Se vacia al TERMINAR bien (`_vaciar_buzon`),
+    y lo que se abandona lo barre `_barrer_buzon` por antiguedad.
     """
-    rutas = _rutas_aportadas(encargo.get("estilo_imagenes"))
     if not rutas:
         # sin nada nuevo NO se borra lo que ya hubiera: retomar un taller a
         # medias tiene que conservar el material con el que se lanzo
@@ -7064,11 +7151,40 @@ def _sembrar_aportadas(ctx, encargo):
         except OSError:
             continue
         dentro.append(final)
+    return dentro
+
+
+def _vaciar_buzon(encargo):
+    """Quita del buzon las imagenes de un encargo que ya salio bien."""
+    for ruta in _rutas_aportadas(encargo.get("estilo_imagenes")):
         try:
             os.remove(ruta)
         except OSError:
-            pass            # que no se vacie el buzon no puede tumbar la tanda
-    return dentro
+            pass            # que no se vacie el buzon no puede tumbar nada
+
+
+#: Cuanto vive en el buzon una imagen que nadie uso. Como ya no se borran al
+#: copiarlas, lo abandonado --un formulario que se cerro sin generar, un intento
+#: que no se retomo-- se barre por antiguedad. Una semana da margen de sobra
+#: para volver a un intento fallido.
+DIAS_BUZON = 7
+
+
+def _barrer_buzon():
+    """Borra del buzon lo que lleva mas de `DIAS_BUZON` sin tocarse."""
+    limite = time.time() - DIAS_BUZON * 86400
+    carpeta = _carpeta_aportadas()
+    try:
+        nombres = os.listdir(carpeta)
+    except OSError:
+        return
+    for nombre in nombres:
+        ruta = os.path.join(carpeta, nombre)
+        try:
+            if os.path.isfile(ruta) and os.path.getmtime(ruta) < limite:
+                os.remove(ruta)
+        except OSError:
+            pass
 
 
 @app.post("/api/presets-light/imagenes", status_code=201)
@@ -7089,6 +7205,7 @@ async def subir_imagenes_light(peticion: Request):
 
     carpeta = _carpeta_aportadas()
     os.makedirs(carpeta, exist_ok=True)
+    _barrer_buzon()
     guardadas, avisos = [], []
     for _clave, valor in formulario.multi_items():
         if not hasattr(valor, "read"):
@@ -7702,6 +7819,10 @@ def _correr_preset_light(avisar, ctx, encargo, solo, preset_id, retomar=False):
 
     avisar(0.99, "guardando el preset", "Guardando tu estilo")
     ficha = _congelar_preset(ctx, encargo, preset_id)
+    # SOLO AHORA, con el estilo ya guardado, se vacia el buzon: las imagenes
+    # viven en el taller y ya no hacen falta ahi. Un intento que fallo antes de
+    # llegar aqui las conserva, y por eso volver a pulsar «Generar» funciona.
+    _vaciar_buzon(encargo)
     salida["preset"] = ficha["id"]
     salida["resumen"] = ficha.get("resumen") or ""
     salida["coste_usd"] = round(salida["coste_usd"], 4)
@@ -7887,10 +8008,22 @@ def listar_presets_light():
 
 @app.post("/api/presets-light/plan")
 def plan_preset_light(cuerpo: dict = Body(default=None)):
-    """Lo que va a hacer, en orden y con sus tiempos. No lanza nada."""
-    encargo = _encargo_o_400(_cuerpo(cuerpo))
-    plan = _light().plan_de(encargo)
-    return {"encargo": encargo, "plan": plan}
+    """Lo que va a hacer, en orden y con sus tiempos. No lanza nada.
+
+    UN FORMULARIO A MEDIAS NO ES UNA PETICION MALA, y por eso aqui NO da 400:
+    la pantalla pregunta el plan mientras se escribe, y un 400 por tecla llena
+    la consola del navegador de rojo con lo que es el estado normal de un
+    formulario sin acabar. Contesta 200 con `falta` --el motivo, en una frase--
+    y sin plan; la pantalla deja el boton apagado y enseña el motivo. Crear de
+    verdad (`POST /api/presets-light`) sigue dando 400.
+    """
+    datos = _cuerpo(cuerpo)
+    light = _light()
+    try:
+        encargo = light.validar_encargo(datos)
+    except light.ErrorEncargo as fallo:
+        return {"falta": str(fallo), "encargo": None, "plan": None}
+    return {"falta": "", "encargo": encargo, "plan": light.plan_de(encargo)}
 
 
 @app.post("/api/presets-light", status_code=202)
@@ -7914,12 +8047,17 @@ def crear_preset_light(cuerpo: dict = Body(default=None)):
         if not ctx.proyecto.config.get(CONFIG_TALLER):
             raise ErrorApi(400, f"{pedido} no es un taller de estilo")
         retomar = True
+        rutas = _aportadas_pedidas(encargo, taller=ctx)
     else:
+        # LAS IMAGENES SE COMPRUEBAN ANTES DE CREAR EL TALLER: si falta alguna
+        # es un 400 sin haber dejado una carpeta huerfana ni gastado nada. Y el
+        # motor de imagen se comprueba dentro de `_crear_taller`, tambien antes.
+        rutas = _aportadas_pedidas(encargo)
         ctx = _crear_taller(encargo)
     _sembrar_taller(ctx, encargo)
     # ANTES de lanzar: la guia es la primera tarea que las mira, y retomar un
     # taller no puede perderlas -- se vuelven a copiar y ya estaban.
-    aportadas = _sembrar_aportadas(ctx, encargo)
+    aportadas = _sembrar_aportadas(ctx, rutas)
     ctx.bitacora.anotar("preset_light_lanzado", None,
                         {"nombre": encargo["nombre"], "idioma": encargo["idioma"],
                          "ritmo": encargo.get("ritmo"), "retomado": retomar,
@@ -8109,7 +8247,13 @@ def regenerar_preset_light(preset_id: str, cuerpo: dict = Body(default=None)):
         origen["estilo_imagenes"] = fuente.get("estilo_imagenes") or []
     if fuente and parte == "tono":
         origen["tono_prompt"] = fuente.get("tono_prompt") or ""
-    encargo = _encargo_o_400(origen)
+    # EL MINIMO DE IMAGENES SOLO SE EXIGE A LAS QUE ENTRAN AHORA. Una fuente
+    # nueva de estilo pasa por la guia, que pide `MIN_IMAGENES_GUIA`. Lo demas
+    # --corregir el tono, la voz o el estilo con una frase-- lleva las imagenes
+    # con las que se hizo el estilo, y un estilo de antes de esta regla puede
+    # tener menos: no se le puede impedir corregir el tono por eso.
+    nuevas_imagenes = bool(fuente) and parte == "estilo"
+    encargo = _encargo_o_400(origen, minimo_imagenes=None if nuevas_imagenes else 1)
 
     # ¿HAN CAMBIADO LAS IMAGENES, O SOLO LAS INDICACIONES? Cambiar «igual pero
     # mas frio» con las MISMAS imagenes detras solo obliga a reescribir la guia y
@@ -8169,7 +8313,10 @@ def regenerar_preset_light(preset_id: str, cuerpo: dict = Body(default=None)):
     # abajo y deja un plan VACIO -- el trabajo termina «listo» sin haber hecho
     # nada y la pantalla vuelve como si el cambio estuviera aplicado.
     tareas = tuple(t for t in tareas if t in light.TAREAS_POR_ID)
-    aportadas = _sembrar_aportadas(ctx, encargo) if material else []
+    # SIN `taller`: aqui las imagenes son LA FUENTE NUEVA, y volver a las del
+    # taller si no llegan seria rehacer el estilo con las viejas sin decirlo.
+    aportadas = (_sembrar_aportadas(ctx, _aportadas_pedidas(encargo))
+                 if material else [])
     ctx.bitacora.anotar("preset_light_regenerar", None,
                         {"preset": preset_id, "parte": parte,
                          "peticion": peticion[:200],
@@ -8275,6 +8422,9 @@ def editar_preset_light(preset_id: str, cuerpo: dict = Body(default=None)):
         if sobran:
             raise ErrorApi(400, "un preset de voz no guarda "
                                 + ", ".join(sorted(sobran)))
+        # el id pegado a mano no pasa por el catalogo: se mira su forma aqui
+        if limpios.get("voz_id") and not light.VOZ_ID.match(str(limpios["voz_id"])):
+            raise ErrorApi(400, light.MENSAJE_VOZ_ID)
         if limpios:
             contenido["voz"] = dict(contenido.get("voz") or {}, **limpios)
             # y el origen recuerda la voz elegida a mano: rehacer «la voz» con
@@ -8371,7 +8521,8 @@ def editar_preset_light(preset_id: str, cuerpo: dict = Body(default=None)):
     origen = dict((nueva.get("datos") or {}).get("origen") or {})
     origen["nombre"] = nombre
     origen["idioma"] = idioma
-    encargo = _encargo_o_400(origen)
+    # cambiar el idioma adapta lo que ya hay: sus imagenes son las de siempre
+    encargo = _encargo_o_400(origen, minimo_imagenes=1)
     _sembrar_taller(ctx, encargo)
     trabajo_id = ctx.gestor.lanzar(
         "preset_light", _correr_preset_light, ctx, encargo,
@@ -9105,6 +9256,11 @@ def crear_video_light(preset_id: str, cuerpo: dict = Body(default=None)):
         nombre = f"Vídeo de {ficha_preset.get('nombre') or preset_id}"
     if not identificador(nombre):
         raise ErrorApi(400, f"'{nombre}' no da un identificador valido")
+    # EL MOTOR Y LA CALIDAD DE IMAGEN, los del ajuste y lo que haya conectado.
+    # Antes de crear nada: sin Google ni OpenAI el video no podria dibujar un
+    # solo plano, y decirlo aqui cuesta un 409 en vez de una carpeta huerfana y
+    # una tanda que muere en la primera imagen.
+    params_imagen = _params_de_imagen_nuevos(estricto=True)
     os.makedirs(raiz_proyectos(), exist_ok=True)
     base, intento = nombre[:60], 1
     while os.path.isdir(os.path.join(raiz_proyectos(), identificador(nombre))):
@@ -9118,6 +9274,12 @@ def crear_video_light(preset_id: str, cuerpo: dict = Body(default=None)):
     ctx.proyecto.config[CONFIG_VIDEO_LIGHT] = True
     ctx.proyecto.config[CONFIG_ESTILO_LIGHT] = preset_id
     ctx.proyecto.guardar_config()
+    # ANTES de aplicar el estilo, y ese orden es una decision: el estilo puede
+    # traer su propia `calidad` (un estilo guardado desde el modo editor la
+    # lleva, y entonces es parte de lo que se guardo) y en ese caso manda sobre
+    # el ajuste. El motor no lo trae ningun estilo: es de esta instalacion.
+    if params_imagen:
+        ctx.estado.actualizar_params("assets", params_imagen)
 
     # EL ESTILO, con el mismo codigo que el boton del modo editor. Un segundo
     # camino que copiara las claves a mano se quedaria viejo el dia que un

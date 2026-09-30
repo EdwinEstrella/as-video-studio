@@ -274,10 +274,10 @@ def generar_guia(proyecto, rutas, modelo=None, esfuerzo=None, avisar=None,
     paso moria con un TypeError antes de llamar a nadie.
     """
     rutas = validar_seleccion(rutas)
-    if len(rutas) < 3:
-        raise ValueError("hacen falta al menos 3 fotogramas para escribir una "
-                         "guia de estilo: con menos se describe una escena, no "
-                         "un estilo")
+    if len(rutas) < comun.MIN_IMAGENES_GUIA:
+        raise ValueError(f"hacen falta al menos {comun.MIN_IMAGENES_GUIA} "
+                         f"fotogramas para escribir una guia de estilo: con "
+                         f"menos se describe una escena, no un estilo")
     # El escalon de ESTA fase, no el general del CLI. Llamada sin ajuste -- desde
     # un script, desde una prueba -- caia en el defecto global y escribia la guia
     # con el modelo mas barato del Estudio, que es justo lo que no se quiere para

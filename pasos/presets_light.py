@@ -70,9 +70,10 @@ import re
 import random
 
 try:
-    from . import cartelas, cta, estadisticas, medios, moodboard, p7_callouts
+    from . import cartelas, comun, cta, estadisticas, medios, moodboard, p7_callouts
 except ImportError:  # ejecutado con la carpeta pasos directamente en sys.path
     import cartelas
+    import comun
     import cta
     import estadisticas
     import medios
@@ -469,15 +470,34 @@ IDIOMAS = ("es", "en", "pt", "fr", "it", "de")
 #: rompe el dia que alguien mueva uno de los dos.
 MAX_VIDEOS_TONO = 5
 
+#: La forma de un id de voz de Cartesia. La comprueba el encargo, la comprueba el
+#: PUT de un estilo que ya existe y la repite la pantalla (`VOZ_ID_LIGHT` en
+#: app.js) para decirlo al momento: si una cambia y las otras no, la pantalla
+#: deja pegar un id que el servidor rechaza.
+VOZ_ID = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+MENSAJE_VOZ_ID = ("«voz_id» no parece un id de voz de Cartesia: son de 8 a 64 "
+                  "letras, números, guiones o guiones bajos, sin espacios")
 
-def validar_encargo(crudo):
+
+def validar_encargo(crudo, minimo_imagenes=None):
     """Deja el encargo limpio, o levanta diciendo que falta. -> dict
 
     Las dos fuentes del estilo grafico --video y descripcion-- son EXCLUYENTES a
     proposito. Con las dos puestas habria que decidir cual manda, y esa decision
     no la puede tomar el programa: una URL y un parrafo pueden describir estilos
     distintos, y el que perdiera se habria escrito para nada.
+
+    `minimo_imagenes` es cuantas imagenes de estilo hacen falta, y por defecto
+    son las que exige la guia (`comun.MIN_IMAGENES_GUIA`): validar menos dejaba
+    pulsar «Generar» con una imagen y morir en la guia, despues de crear el
+    taller. Lo bajan a 1 quienes REHACEN otra parte de un estilo que ya existe
+    --el tono, la voz, el idioma--: su encargo trae las imagenes con las que se
+    hizo, que en un estilo de antes de esta regla pueden ser menos, y no se
+    puede impedir corregir el tono por eso. Nunca baja de 1.
     """
+    if minimo_imagenes is None:
+        minimo_imagenes = comun.MIN_IMAGENES_GUIA
+    minimo_imagenes = max(1, int(minimo_imagenes))
     datos = crudo if isinstance(crudo, dict) else {}
     limpio = {}
 
@@ -513,11 +533,17 @@ def validar_encargo(crudo):
     imagenes = [str(x).strip() for x in (datos.get("estilo_imagenes") or [])
                 if str(x).strip()]
     prompt = " ".join(str(datos.get("estilo_prompt") or "").split())
-    if not imagenes:
+    if len(imagenes) < minimo_imagenes:
+        if not imagenes:
+            raise ErrorEncargo(
+                f"falta el estilo gráfico: adjunta al menos {minimo_imagenes} "
+                f"imágenes que ya tengan el aspecto que quieres. Lo escrito "
+                f"acompaña, pero de un párrafo solo se inventa todo lo que el "
+                f"párrafo no diga")
         raise ErrorEncargo(
-            "falta el estilo gráfico: adjunta al menos una imagen que ya tenga "
-            "el aspecto que quieres. Lo escrito acompaña, pero de un párrafo "
-            "solo se inventa todo lo que el párrafo no diga")
+            f"faltan imágenes del estilo gráfico: has adjuntado {len(imagenes)} "
+            f"y hacen falta al menos {minimo_imagenes}. Con menos se describe "
+            f"una escena, no un estilo")
     tope = max_imagenes_estilo()
     if len(imagenes) > tope:
         raise ErrorEncargo(
@@ -563,8 +589,8 @@ def validar_encargo(crudo):
     # normal, la clonada del canal). Con ella la descripcion sigue valiendo
     # --pone la velocidad y el color-- pero la voz no se elige: es esa.
     voz_id = " ".join(str(datos.get("voz_id") or "").split())
-    if voz_id and not re.match(r"^[A-Za-z0-9_-]{8,64}$", voz_id):
-        raise ErrorEncargo("«voz_id» no parece un id de voz de Cartesia")
+    if voz_id and not VOZ_ID.match(voz_id):
+        raise ErrorEncargo(MENSAJE_VOZ_ID)
     limpio["voz_id"] = voz_id
 
     # AQUI NO HAY PERSONAJES DEL CANAL NI LLAMADAS A LA ACCION, y las dos

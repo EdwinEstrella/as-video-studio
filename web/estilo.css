@@ -1664,6 +1664,8 @@ input[type=range].ritmo {
 }
 .panel-voces > .fila { margin: 0 0 8px; gap: 8px; align-items: center; }
 .buscar-voz { flex: 1; min-width: 140px; }
+/* El id de voz pegado a mano: ocupa la fila y deja sitio al boton. */
+.voz-id { flex: 1; min-width: 140px; }
 /* Alto tope y rueda: 417 voces no caben en una pantalla, y que la ficha entera
    crezca hasta ellas convierte la pantalla del estilo en un catálogo.
    190px por celda son cuatro columnas en los 868 de la tarjeta, y con 360 de

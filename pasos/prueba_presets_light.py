@@ -56,7 +56,7 @@ def seccion(titulo):
 #: escribe: no hay nada que copiar, hay algo que decidir.
 ENCARGO_VIDEO = {
     "nombre": "Canal de prueba", "idioma": "es",
-    "estilo_imagenes": ["a.png", "b.png"],
+    "estilo_imagenes": ["a.png", "b.png", "c.png"],
     "estilo_prompt": "dibujo plano de linea gruesa",
     "tono_prompt": "serio pero cercano, sin dramatismo",
     "voz_prompt": "grave, pausada, sin sonar a locutor",
@@ -80,6 +80,11 @@ def probar_encargo():
         (dict(ENCARGO_VIDEO, voz_prompt=""), "sin voz"),
         (dict(ENCARGO_VIDEO, tono_prompt=""), "sin tono"),
         (dict(ENCARGO_VIDEO, tono_prompt="cor"), "con un tono de tres letras"),
+        # LAS MISMAS QUE PIDE LA GUIA: con menos, el formulario dejaba pulsar
+        # «Generar» y la guia moria despues, con el taller ya creado
+        (dict(ENCARGO_VIDEO, estilo_imagenes=["a.png"]), "con una sola imagen"),
+        (dict(ENCARGO_VIDEO, estilo_imagenes=["a.png", "b.png"]),
+         "con dos imagenes"),
     ]
     for crudo, etiqueta in casos:
         try:
@@ -88,6 +93,49 @@ def probar_encargo():
         except light.ErrorEncargo as fallo:
             ok(len(str(fallo)) > 20,
                f"un encargo {etiqueta} se rechaza con un motivo legible")
+
+    # UN SOLO NUMERO: el minimo del formulario es el de la guia, no otro
+    # literal que se pueda separar de ella
+    import comun
+    import estilo
+    igual(comun.MIN_IMAGENES_GUIA, 3, "la guia pide tres imagenes")
+    try:
+        light.validar_encargo(dict(ENCARGO_VIDEO, estilo_imagenes=["a.png"]))
+    except light.ErrorEncargo as fallo:
+        ok(str(comun.MIN_IMAGENES_GUIA) in str(fallo),
+           f"y el motivo dice cuantas hacen falta: {fallo}")
+    try:
+        # ficheros que existen: `validar_seleccion` mira el disco ANTES de contar
+        estilo.generar_guia(None, [__file__, os.path.abspath(light.__file__)])
+        ok(False, "la guia tenia que negarse con dos imagenes")
+    except ValueError as fallo:
+        ok(str(comun.MIN_IMAGENES_GUIA) in str(fallo),
+           "y la guia dice el mismo numero")
+    except Exception as fallo:                          # noqa: BLE001
+        ok(False, f"la guia tenia que dar ValueError y dio {fallo!r}")
+
+    # quien REHACE otra parte de un estilo que ya existe lo baja a una: un
+    # estilo de antes de la regla no se queda sin poder corregir su tono
+    ok(light.validar_encargo(dict(ENCARGO_VIDEO, estilo_imagenes=["a.png"]),
+                             minimo_imagenes=1)["estilo_imagenes"] == ["a.png"],
+       "rehacer otra parte acepta el encargo con una imagen")
+    try:
+        light.validar_encargo(dict(ENCARGO_VIDEO, estilo_imagenes=[]),
+                              minimo_imagenes=1)
+        ok(False, "y sin ninguna sigue siendo un error")
+    except light.ErrorEncargo:
+        ok(True, "y sin ninguna sigue siendo un error")
+
+    # el id de voz pegado a mano: la misma regla en el encargo y en el PUT
+    for bueno in ("a0e99841-438c-4a64-b679-ae501e7d6091", "v-de-prueba"):
+        igual(light.validar_encargo(dict(ENCARGO_VIDEO, voz_id=bueno))["voz_id"],
+              bueno, f"el id de voz {bueno!r} vale")
+    for malo in ("corto", "con espacios dentro de el", "raro!$%&/()", "x" * 65):
+        try:
+            light.validar_encargo(dict(ENCARGO_VIDEO, voz_id=malo))
+            ok(False, f"el id de voz {malo!r} tenia que rechazarse")
+        except light.ErrorEncargo:
+            ok(True, f"el id de voz {malo!r} se rechaza")
 
 
 def probar_plan():
@@ -476,7 +524,7 @@ def probar_tono_completo():
 
     seccion("EL TONO SE ESCRIBE")
     base = {"nombre": "X", "idioma": "es",
-            "estilo_imagenes": ["a.png"],
+            "estilo_imagenes": ["a.png", "b.png", "c.png"],
             "voz_prompt": "grave y pausada"}
     limpio = light.validar_encargo(
         dict(base, tono_prompt="  seco  y  sin  adjetivos  "))

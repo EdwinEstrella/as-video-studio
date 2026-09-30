@@ -556,7 +556,13 @@ async function pedir(url, opciones) {
   if (!respuesta.ok) {
     const detalle = (datos && (datos.error || datos.mensaje)) || crudo.slice(0, 400)
       || `HTTP ${respuesta.status}`;
-    throw new Error(detalle);
+    // el cuerpo entero y el codigo viajan con el fallo: algunos errores traen
+    // datos ademas de la frase (`faltan`, las imagenes que ya no estan) y quien
+    // los quiera los lee de aqui en vez de volver a pedir nada
+    const fallo = new Error(detalle);
+    fallo.estado = respuesta.status;
+    fallo.datos = datos;
+    throw fallo;
   }
   if (datos && datos.error) throw new Error(datos.error);
   return datos === null ? {} : datos;
@@ -9740,6 +9746,15 @@ function pieDeCreacion() {
   const comprobar = () => {
     pedir(API.presetLightPlan(), { method: 'POST', cuerpo: encargoParaServidor() })
       .then(datos => {
+        // UN FORMULARIO A MEDIAS NO ES UN ERROR: el servidor contesta 200 con
+        // `falta` --el motivo-- y sin plan. Antes daba 400 y cada tecla dejaba
+        // una linea roja en la consola del navegador.
+        if (datos.falta || !datos.plan) {
+          boton.disabled = true;
+          vaciar(nota).append(h('span', { clase: 'aviso' },
+            datos.falta || 'falta algo por rellenar'));
+          return;
+        }
         const plan = datos.plan || {};
         const imagenes = Number(plan.imagenes) || 0;
         vaciar(nota).append(
@@ -9781,7 +9796,18 @@ async function lanzarPresetLight(taller) {
     });
     seguirTrabajo(CLAVE_LIGHT, datos.trabajo_id, alTerminarLight, () => pintarLight());
   } catch (e) {
-    toast(`no se ha podido lanzar: ${e.message}`, true);
+    // IMAGENES QUE EL SERVIDOR YA NO TIENE: se quitan de la lista, que si no
+    // el formulario sigue enseñando miniaturas rotas y volver a pulsar manda
+    // los mismos nombres. Las buenas se quedan; hay que subir solo las que
+    // faltan.
+    const faltan = ((e.datos || {}).faltan || []).map(String);
+    if (faltan.length) {
+      const enc = encargoLight();
+      enc.estilo_imagenes = (enc.estilo_imagenes || [])
+        .filter(x => !faltan.includes(x.nombre));
+      pintarLight();
+    }
+    toast(faltan.length ? e.message : `no se ha podido lanzar: ${e.message}`, true);
   }
 }
 
@@ -10080,8 +10106,23 @@ function mandosDeVozLight(ficha, voz) {
     dentro.appendChild(h('div', { clase: 'pista' },
       `cargando las voces de ${nombreIdiomaLight(idioma)}…`));
   } else {
+    // si el catálogo no llegó entero, el motivo va ENCIMA de la lista: sin él,
+    // una lista corta o vacía se lee como «esto es todo lo que hay»
+    const aviso = avisoVocesLight(idioma);
+    if (aviso) dentro.appendChild(h('div', { clase: 'caja-aviso' }, aviso));
     dentro.appendChild(selectorVozLight(ficha, voz, lista, guardar));
   }
+  /* Y SIEMPRE, HAYA CATÁLOGO O NO, EL ID A MANO: es la salida cuando la voz no
+     sale en la lista. Lo que hay puesto y no está en el catálogo se enseña aquí
+     (la del catálogo ya se ve marcada en su cuadrícula). */
+  const fuera = !!(lista && voz.voz_id && !lista.some(v => v.id === voz.voz_id));
+  dentro.appendChild(campoVozIdLight(fuera ? voz.voz_id : '', id => {
+    // el nombre pasa a ser el id: el que hubiera era de la voz anterior y una
+    // etiqueta que no corresponde a la voz puesta es peor que ninguna (el
+    // servidor ignora los valores vacios, asi que no se puede borrar)
+    guardar({ voz_id: id, voz_nombre: id });
+    repintarBloqueVoz(ficha);
+  }, false));
 
   dentro.appendChild(campoSelect('Velocidad', voz.velocidad || 'normal',
     VELOCIDADES.map(v => ({ valor: v, nombre: v })),
@@ -10169,15 +10210,79 @@ function vocesLight(idioma) {
   if (catalogo.idioma === idioma) return catalogo.lista || [];
   if (!catalogo.pidiendo || catalogo.pidiendo !== idioma) {
     APP.light.voces = { idioma: catalogo.idioma, pidiendo: idioma,
-      lista: catalogo.lista || [] };
+      lista: catalogo.lista || [], aviso: catalogo.aviso || '' };
     pedir(API.voces(idioma, true))
       .then(datos => {
-        APP.light.voces = { idioma, lista: datos.voces || [], pidiendo: null };
+        // `aviso` es el motivo de que el catálogo no haya llegado entero: el
+        // servidor contesta 200 con las voces de ejemplo y lo dice aquí
+        APP.light.voces = { idioma, lista: datos.voces || [], pidiendo: null,
+          aviso: datos.aviso || '' };
         if (['preset', 'crear'].includes(APP.light.vista)) pintarLight();
       })
-      .catch(() => { APP.light.voces = { idioma, lista: [], pidiendo: null }; });
+      .catch(err => {
+        // SI NI SIQUIERA CONTESTA EL SERVIDOR, también se dice: una lista vacía
+        // a secas se leía como «no hay voces clonadas en esta cuenta».
+        APP.light.voces = { idioma, lista: [], pidiendo: null,
+          aviso: `No se ha podido leer el catálogo de voces: ${err.message}`
+            + '. Si conoces el id de tu voz, puedes pegarlo a mano.' };
+        if (['preset', 'crear'].includes(APP.light.vista)) pintarLight();
+      });
   }
   return null;
+}
+
+/* Por qué el catálogo de voces no está entero ('' si lo está). Sale de lo último
+   que se pidió para ese idioma. */
+function avisoVocesLight(idioma) {
+  const catalogo = APP.light.voces || {};
+  return catalogo.idioma === (idioma || 'es') ? (catalogo.aviso || '') : '';
+}
+
+/* EL ID DE UNA VOZ, PEGADO A MANO. Es lo que salva el día en que el catálogo no
+   carga (o la voz es de una cuenta que este servidor no ve): en Cartesia el id
+   se copia de su pantalla de voces. La forma es la misma que valida el servidor
+   (`presets_light.validar_encargo`): de 8 a 64 letras, números, guiones y
+   guiones bajos. Se comprueba aquí para decirlo al momento y no con un 400 al
+   pulsar «Generar». */
+const VOZ_ID_LIGHT = /^[A-Za-z0-9_-]{8,64}$/;
+
+/* `actual`: el id puesto ahora ('' si ninguno). `alElegir(id)` se llama con un id
+   válido. Con `permitirVacio`, vaciar el campo y pulsar el botón lo llama con ''
+   (quitar la voz elegida a mano, en el formulario de crear); sin él, un campo
+   vacío se dice y no hace nada — en un estilo que ya existe el servidor ignora
+   los valores vacíos, así que «quitar» sería una promesa que no cumple. */
+function campoVozIdLight(actual, alElegir, permitirVacio) {
+  const mensaje = h('div', { clase: 'pista' });
+  const entrada = h('input', {
+    type: 'text', clase: 'voz-id', spellcheck: 'false', autocomplete: 'off',
+    placeholder: 'pega aquí el id de la voz (de 8 a 64 caracteres)',
+    value: actual || '',
+  });
+  const aplicar = () => {
+    const id = entrada.value.trim();
+    if (!id && !permitirVacio) {
+      mensaje.className = 'meta aviso';
+      mensaje.textContent = 'Pega primero el id de la voz.';
+      return;
+    }
+    if (id && !VOZ_ID_LIGHT.test(id)) {
+      mensaje.className = 'meta aviso';
+      mensaje.textContent = 'Eso no parece un id de voz de Cartesia: son de 8 a 64 '
+        + 'letras, números, guiones o guiones bajos, sin espacios.';
+      return;
+    }
+    mensaje.className = 'pista';
+    mensaje.textContent = id ? 'Voz puesta por su id.' : 'Voz quitada.';
+    alElegir(id);
+  };
+  entrada.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter') { ev.preventDefault(); aplicar(); }
+  });
+  return h('div', { clase: 'campo' },
+    h('label', {}, 'O pega el id de una voz'),
+    h('div', { clase: 'fila' }, entrada,
+      h('button', { clase: 'mini', onclick: aplicar }, 'Usar este id')),
+    mensaje);
 }
 
 /* Las voces PROPIAS de la cuenta (clonadas): un desplegable aparte de la
@@ -10191,25 +10296,47 @@ function selectorVozPropiaLight(e) {
     caja.appendChild(h('div', { clase: 'pista' }, 'cargando tus voces…'));
     return caja;
   }
+  // SI EL CATÁLOGO NO HA LLEGADO ENTERO, SE DICE POR QUÉ: «no hay voces
+  // clonadas» sería mentira, lo que pasa es que no se han podido leer.
+  const aviso = avisoVocesLight(e.idioma);
+  if (aviso) caja.appendChild(h('div', { clase: 'caja-aviso' }, aviso));
   const propias = lista.filter(v => v.publica === false);
-  if (!propias.length) {
+  // UN ID PEGADO A MANO NO ESTÁ EN LA LISTA Y NO POR ESO SE TIRA: antes, lo que
+  // no fuera de las clonadas se borraba aquí en silencio. Ahora solo el
+  // desplegable se queda en «que la elija la descripción» y el id sigue puesto
+  // en su campo.
+  const enLista = propias.some(v => v.id === e.voz_id);
+  let desplegable = null;
+  if (propias.length) {
+    caja.appendChild(h('label', {}, 'Tus voces (clonadas)'));
+    desplegable = h('select', {
+      onchange: ev => {
+        e.voz_id = ev.target.value;
+        // elegir de la lista y pegar un id son dos caminos a la MISMA voz: el
+        // campo del id se vacía para no enseñar dos a la vez
+        const pegado = caja.querySelector('input.voz-id');
+        if (pegado) pegado.value = '';
+        tocarEncargoLight();
+      },
+    },
+      h('option', { value: '', selected: !enLista },
+        '— que la elija por la descripción —'),
+      ...propias.map(v => h('option', { value: v.id, selected: e.voz_id === v.id },
+        `${v.nombre || v.id}${v.descripcion ? ` · ${v.descripcion}` : ''}`)));
+    caja.appendChild(desplegable);
+    caja.appendChild(h('div', { clase: 'pista' },
+      'Con una elegida, la descripción de arriba solo decide la velocidad y el '
+      + 'color; la voz es esta y se queda en el estilo.'));
+  } else if (!aviso) {
     caja.appendChild(h('div', { clase: 'pista' },
       'No hay voces clonadas en esta cuenta de Cartesia: la voz se elige por la '
       + 'descripción de arriba. Si clonas una, aparecerá aquí.'));
-    return caja;
   }
-  if (e.voz_id && !propias.some(v => v.id === e.voz_id)) e.voz_id = '';
-  caja.appendChild(h('label', {}, 'Tus voces (clonadas)'));
-  caja.appendChild(h('select', {
-    onchange: ev => { e.voz_id = ev.target.value; tocarEncargoLight(); },
-  },
-    h('option', { value: '', selected: !e.voz_id },
-      '— que la elija por la descripción —'),
-    ...propias.map(v => h('option', { value: v.id, selected: e.voz_id === v.id },
-      `${v.nombre || v.id}${v.descripcion ? ` · ${v.descripcion}` : ''}`))));
-  caja.appendChild(h('div', { clase: 'pista' },
-    'Con una elegida, la descripción de arriba solo decide la velocidad y el '
-    + 'color; la voz es esta y se queda en el estilo.'));
+  caja.appendChild(campoVozIdLight(enLista ? '' : e.voz_id, id => {
+    e.voz_id = id;
+    if (desplegable) desplegable.value = propias.some(v => v.id === id) ? id : '';
+    tocarEncargoLight();
+  }, true));
   return caja;
 }
 

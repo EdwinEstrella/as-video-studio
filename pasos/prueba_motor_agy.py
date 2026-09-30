@@ -850,6 +850,145 @@ def prueba_coste():
        "el medidor engancha tambien el motor de agy")
 
 
+# ------------------------------------------------------------------ 10. proyecto nuevo
+
+def prueba_motor_de_proyecto_nuevo():
+    """Con que motor nace un proyecto NUEVO: lo elegido cruzado con lo conectado.
+
+    "Si conecto mi cuenta de Google, que use ese motor; si conecto OpenAI, que
+    use OpenAI; si no tengo ninguno, que no use nada." Sin esto el modo light
+    creaba sus proyectos en OpenAI aunque solo hubiera Google.
+    """
+    seccion("10] el motor con el que nace un proyecto nuevo")
+    R = medios.resolver_motor_de_imagen
+    # la regla, sin nada alrededor
+    igual(R("openai", {"openai": True, "agy": False}), "openai", "solo OpenAI -> openai")
+    igual(R("agy", {"openai": True, "agy": False}), "openai",
+          "elegido Google pero solo hay OpenAI -> openai")
+    igual(R("agy", {"openai": False, "agy": True}), "agy", "solo Google -> agy")
+    igual(R("openai", {"openai": False, "agy": True}), "agy",
+          "elegido OpenAI pero solo hay Google -> agy (el caso del bug)")
+    igual(R("openai", {"openai": True, "agy": True}), "openai",
+          "con los dos manda lo elegido: openai")
+    igual(R("agy", {"openai": True, "agy": True}), "agy",
+          "con los dos manda lo elegido: agy")
+    igual(R("raro", {"openai": True, "agy": True}), "openai",
+          "un valor raro es el de siempre")
+    for elegido in ("openai", "agy"):
+        try:
+            R(elegido, {"openai": False, "agy": False})
+            ok(False, f"sin nada conectado ({elegido}) tenia que levantar")
+        except medios.SinMotorDeImagen as fallo:
+            ok("Google" in str(fallo) and "OpenAI" in str(fallo)
+               and "Configuración" in str(fallo),
+               f"sin nada conectado ({elegido}) se dice donde conectarlo: {fallo}")
+
+    # la deteccion, contra los motores de verdad y un almacen de mentira
+    import app                                          # noqa: PLC0415
+    pm = app.PASOS_MODULOS.medios       # la copia que usa el servidor
+    mo = pm.motor("imagen_openai/imagen.py")
+    ma = pm.motor("imagen_agy/imagen.py")
+    reales = (mo._claves_declaradas, ma.instalado)
+    try:
+        def con(clave_openai, agy_instalado):
+            mo._claves_declaradas = lambda: ([("", "sk-" + "a" * 40)]
+                                             if clave_openai else [])
+            ma.instalado = lambda: agy_instalado
+
+        def limpiar_agy():
+            if os.path.exists(claves.FICHERO):
+                os.remove(claves.FICHERO)
+            if os.path.exists(ma.ruta_salud()):
+                os.remove(ma.ruta_salud())
+
+        limpiar_agy()
+        con(False, False)
+        igual(pm.imagen_conectada(), {"openai": False, "agy": False},
+              "sin clave ni agy no hay nada conectado")
+        con(True, False)
+        igual(pm.imagen_conectada(), {"openai": True, "agy": False},
+              "una clave de OpenAI (venga de donde venga) conecta OpenAI")
+
+        # agy instalado pero SIN cuentas: la sesion por defecto solo cuenta si
+        # la ultima llamada que se le hizo salio bien (no se lanza agy a mirar)
+        con(False, True)
+        igual(pm.agy_conectado(), False,
+              "agy instalado, sin cuentas y sin haberle hablado: no se da por conectado")
+        ma.anotar(ma.DEFECTO, "ok", "todo bien")
+        igual(pm.agy_conectado(), True, "y si su ultima llamada salio bien, si")
+        ma.anotar(ma.DEFECTO, "sesion", "caducada")
+        igual(pm.agy_conectado(), False, "con la sesion caducada, no")
+        limpiar_agy()
+
+        # con cuentas configuradas: activa + acceso hecho + sesion no caducada
+        login_agy._motor = lambda: ma
+        claves.guardar({"agy": [{"etiqueta": "mia"}, {"etiqueta": "otra"}]})
+        igual(pm.agy_conectado(), False, "cuentas sin el acceso hecho: no cuentan")
+        claves.apuntar_cuenta_agy("agy1", home=os.path.join(CARPETA, "h1"), entrada=True)
+        igual(pm.agy_conectado(), True, "una cuenta con el acceso hecho: conectado")
+        ma.anotar("agy1", "sesion", "caducada")
+        igual(pm.agy_conectado(), False, "si la ultima llamada dijo sesion caducada, no")
+        ma.anotar("agy1", "cupo", "agotado", hasta=int(time.time()) + 3600)
+        igual(pm.agy_conectado(), True,
+              "el cupo agotado NO la descuenta: vuelve solo y la sesion es buena")
+        con(False, False)
+        igual(pm.agy_conectado(), False, "y sin agy instalado no hay nada que conectar")
+
+        # el helper del servidor, de punta a punta con los ajustes reales
+        con(False, True)
+        ajustes.guardar({"motor_imagen": "openai", "calidad_imagen": "medium"})
+        igual(app._params_de_imagen_nuevos(),
+              {"calidad": "medium", "motor_imagen": "agy"},
+              "elegido OpenAI, solo Google: nace con agy y la calidad del ajuste")
+        igual(app._params_de_imagen_nuevos(con_calidad=False),
+              {"motor_imagen": "agy"}, "sin calidad (el taller): solo el motor")
+        con(True, False)
+        igual(app._params_de_imagen_nuevos(), {"calidad": "medium"},
+              "solo OpenAI: el motor no se escribe (es el defecto y moveria firmas)")
+        ajustes.guardar({"motor_imagen": "agy"})
+        igual(app._params_de_imagen_nuevos(), {"calidad": "medium"},
+              "elegido Google pero solo hay OpenAI: openai")
+        con(True, True)
+        igual(app._params_de_imagen_nuevos(),
+              {"calidad": "medium", "motor_imagen": "agy"},
+              "con los dos manda lo elegido")
+
+        con(False, False)
+        igual(app._params_de_imagen_nuevos(),
+              {"calidad": "medium", "motor_imagen": "agy"},
+              "sin ninguno, NO estricto: se respeta lo elegido (el modo editor "
+              "crea proyectos para trabajar sin imagenes)")
+        try:
+            app._params_de_imagen_nuevos(estricto=True)
+            ok(False, "sin ninguno y estricto tenia que dar 409")
+        except app.ErrorApi as fallo:
+            igual(fallo.codigo, 409, "sin ninguno y estricto: 409")
+            ok("Configuración" in fallo.mensaje, "y dice donde conectarlo")
+
+        # el taller: mismo helper, SIN calidad, y sin ninguno no nace
+        raiz = os.path.join(CARPETA, "proyectos")
+        os.makedirs(raiz, exist_ok=True)
+        app.fijar_raiz_proyectos(raiz)
+        try:
+            app._crear_taller({"nombre": "sin motor"})
+            ok(False, "sin ningun motor el taller no tenia que nacer")
+        except app.ErrorApi as fallo:
+            igual(fallo.codigo, 409, "sin ningun motor el taller da 409…")
+        igual(os.listdir(raiz), [], "…y ANTES de crear la carpeta: nada huerfano")
+        con(False, True)
+        ajustes.guardar({"motor_imagen": "openai", "calidad_imagen": "high"})
+        taller = app._crear_taller({"nombre": "con google"})
+        params = taller.estado.params("assets")
+        igual(params.get("motor_imagen"), "agy",
+              "el taller nace con Google aunque el ajuste diga OpenAI")
+        ok("calidad" not in params,
+           "y sin calidad: lo que el preset congela es el dibujo, no el presupuesto")
+    finally:
+        mo._claves_declaradas, ma.instalado = reales
+        limpiar_agy()
+        ajustes.guardar({"motor_imagen": "openai", "calidad_imagen": "low"})
+
+
 def main():
     try:
         prueba_contratos()
@@ -862,6 +1001,7 @@ def main():
         prueba_claves()
         prueba_coste()
         prueba_agy_falso()
+        prueba_motor_de_proyecto_nuevo()
     finally:
         shutil.rmtree(CARPETA, ignore_errors=True)
     print(f"\nResultado: {len(FALLOS)} fallos")

@@ -1419,6 +1419,41 @@ def listar_voces(idioma=None, refrescar=False, solo_nativas=False):
     return _filtrar_idioma(copy.deepcopy(fichas), idioma, solo_nativas)
 
 
+def voces_de_respaldo(idioma=None):
+    """El minimo util de voces, sin red ni clave. -> [fichas]
+
+    Es lo mismo que `listar_voces` devuelve sin clave: `VOCES_BASE` filtrada por
+    idioma.
+    """
+    return _filtrar_idioma(copy.deepcopy(VOCES_BASE), idioma)
+
+
+def listar_voces_o_respaldo(idioma=None, refrescar=False, solo_nativas=False):
+    """El catalogo, o el respaldo Y POR QUE. -> (voces, aviso)
+
+    Cuando Cartesia falla --sin red, clave rechazada, cupo-- no hay lista, y
+    devolver un error obliga a quien llama a decidir que ensenar. La pantalla
+    lo decidia mal: detras del proxy un 502 del origen lo sustituye una pagina
+    suya sin el mensaje, y lo que llegaba al navegador era «nada», que se
+    pintaba como «no hay voces clonadas en esta cuenta». Mentira con cara de
+    dato. Aqui el fallo VIAJA como `aviso` junto a una lista que sirve para
+    algo, y la pantalla puede decir lo que ha pasado de verdad.
+
+    `aviso` vacio es que todo fue bien.
+    """
+    try:
+        return listar_voces(idioma=idioma, refrescar=refrescar,
+                            solo_nativas=solo_nativas), ""
+    # BaseException porque los motores estan escritos como CLI y abortan con
+    # SystemExit --«No encuentro CARTESIA_API_KEY»--, que no es un `Exception`.
+    except (Exception, SystemExit) as fallo:                   # noqa: BLE001
+        motivo = " ".join(str(fallo).split())[:300] or type(fallo).__name__
+        return voces_de_respaldo(idioma), (
+            f"No se ha podido leer el catálogo de voces de Cartesia: {motivo}. "
+            f"Se enseñan solo las voces de ejemplo; si conoces el id de la "
+            f"tuya, puedes pegarlo a mano.")
+
+
 if __name__ == "__main__":
     import argparse
 

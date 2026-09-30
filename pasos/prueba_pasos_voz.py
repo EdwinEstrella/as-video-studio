@@ -607,6 +607,58 @@ def prueba_catalogo_voces(con_red):
     igual(prestadas, [], "los presets solo proponen voces nativas en espanol")
 
 
+def prueba_catalogo_que_falla(base):
+    """Si Cartesia falla, hay lista de respaldo Y el motivo, no un error."""
+    print("\n[10b] el catalogo falla: respaldo con aviso")
+    originales = (p4_voz.RUTA_CACHE, p4_voz.RUTA_CACHE_VOCES, p4_voz._hay_clave,
+                  p4_voz._descargar_voces)
+    simular = os.environ.get("ESTUDIO_SIMULAR")
+
+    def se_cae():
+        raise RuntimeError("Cartesia contesto 401: clave rechazada")
+
+    def sin_clave_abortando():
+        raise SystemExit("No encuentro CARTESIA_API_KEY")
+
+    try:
+        os.environ["ESTUDIO_SIMULAR"] = "0"
+        # a una carpeta de la prueba: escribir el catalogo de mentira en el
+        # cache de verdad dejaria al Estudio con cuatro voces de ejemplo
+        p4_voz.RUTA_CACHE = os.path.join(base, "sin_cache")
+        p4_voz.RUTA_CACHE_VOCES = os.path.join(p4_voz.RUTA_CACHE, "voces.json")
+        p4_voz._hay_clave = lambda: True
+
+        p4_voz._descargar_voces = se_cae
+        voces, aviso = p4_voz.listar_voces_o_respaldo("es")
+        comprobar(bool(voces) and all(v.get("id") for v in voces),
+                  "sin cache ni red, salen las voces de ejemplo")
+        comprobar("clave rechazada" in aviso and "Cartesia" in aviso,
+                  f"con el motivo REAL del fallo: {aviso!r}")
+        comprobar("pegarlo a mano" in aviso, "y la salida: pegar el id")
+        igual(voces, p4_voz.voces_de_respaldo("es"),
+              "que son las mismas que sin clave")
+
+        # el SystemExit de los motores (escritos como CLI) tampoco se escapa
+        p4_voz._descargar_voces = sin_clave_abortando
+        voces, aviso = p4_voz.listar_voces_o_respaldo("es")
+        comprobar(bool(voces) and "CARTESIA_API_KEY" in aviso,
+                  "un SystemExit del motor tambien se recoge y se cuenta")
+
+        # todo bien: sin aviso
+        p4_voz._descargar_voces = lambda: [
+            {"id": "v" * 12, "nombre": "Una", "idioma": "es", "locales": ["es"],
+             "publica": True}]
+        voces, aviso = p4_voz.listar_voces_o_respaldo("es", refrescar=True)
+        igual(aviso, "", "cuando Cartesia contesta, el aviso va vacio")
+    finally:
+        (p4_voz.RUTA_CACHE, p4_voz.RUTA_CACHE_VOCES, p4_voz._hay_clave,
+         p4_voz._descargar_voces) = originales
+        if simular is None:
+            os.environ.pop("ESTUDIO_SIMULAR", None)
+        else:
+            os.environ["ESTUDIO_SIMULAR"] = simular
+
+
 def prueba_llamada_real(base):
     print("\n[11] UNA llamada real y corta a Cartesia")
     os.environ["ESTUDIO_SIMULAR"] = "0"
@@ -709,6 +761,7 @@ def main():
         prueba_regrabacion_completa(proyecto)
         prueba_cache_por_clave()
         prueba_catalogo_voces(con_red)
+        prueba_catalogo_que_falla(base)
         if con_red:
             prueba_llamada_real(base)
         else:

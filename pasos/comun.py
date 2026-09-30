@@ -16,6 +16,14 @@ import unicodedata
 RAIZ_MOTORES = os.environ.get("ESTUDIO_MOTORES") or os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "motores")
 
+#: CUANTAS IMAGENES NECESITA COMO MINIMO LA GUIA DE ESTILO. La escribe
+#: `estilo.generar_guia`, que se niega con menos --con dos se describe una escena,
+#: no un estilo--, y la valida ANTES `presets_light.validar_encargo`, para que el
+#: formulario no deje pulsar «Generar» con un numero con el que la guia va a
+#: morir despues de haber bajado y mirado todo lo demas. Un solo numero aqui: con
+#: dos literales, cambiar uno dejaba al otro mintiendo.
+MIN_IMAGENES_GUIA = 3
+
 #: {ruta: (modulo, mtime con el que se cargo)}
 _MOTORES = {}
 

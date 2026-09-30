@@ -201,6 +201,84 @@ def motor_de_imagen(p=None):
     return motor(ruta_motor_de_imagen(p))
 
 
+# ---------------------------------------------- con que se dibuja un proyecto NUEVO
+#
+# Configuracion guarda el motor que la persona ELIGIO (`motor_imagen`), pero eso
+# no dice si hay algo detras: se puede haber dejado en OpenAI sin haber puesto
+# nunca una clave, o haber conectado solo Google. Al crear un proyecto se
+# cruzan las dos cosas -- lo elegido y lo conectado -- y de ahi sale el motor
+# con el que nace. Solo vale para proyectos NUEVOS: uno que ya existe conserva
+# el suyo, porque `motor_imagen` entra en la firma de cada imagen ya pagada.
+
+class SinMotorDeImagen(RuntimeError):
+    """No hay ni Google ni OpenAI conectados: no hay con que dibujar."""
+
+
+def openai_conectado():
+    """Si hay una clave de OpenAI de la que tirar. -> bool
+
+    Se pregunta al MOTOR, que es quien sabe de donde puede salir (el entorno, el
+    almacen que escribe Configuracion, un .env): mirar solo el almacen daria por
+    desconectada a una instalacion que va con la clave en el entorno.
+    """
+    try:
+        return bool(motor(MOTOR_DE_IMAGEN_POR_DEFECTO)._claves_declaradas())
+    except Exception:                                          # noqa: BLE001
+        return False
+
+
+def agy_conectado():
+    """Si hay una cuenta de Google con la que dibujar. -> bool
+
+    Lo mismo que cuenta la guia de inicio (`agyConectadoInicio`): agy instalado
+    y al menos UNA cuenta activa con el acceso hecho a la que la ultima llamada
+    no le haya dicho que la sesion caduco. Sin ninguna cuenta configurada se usa
+    la sesion por defecto de la maquina, que solo cuenta si la ultima llamada
+    que se le hizo salio bien: no se lanza agy para averiguarlo, cada
+    lanzamiento gasta cupo.
+    """
+    try:
+        m = motor(MOTORES_DE_IMAGEN["agy"])
+        if not m.instalado():
+            return False
+        cuentas = m.cuentas_configuradas()
+        if not cuentas:
+            salud = m.salud_de(m.DEFECTO) or {}
+            return salud.get("estado") == "ok"
+        return any(c["activa"] and c["entrada"]
+                   and (m.salud_de(c["id"]) or {}).get("estado") != "sesion"
+                   for c in cuentas)
+    except Exception:                                          # noqa: BLE001
+        return False
+
+
+def imagen_conectada():
+    """Que motores de imagen tienen algo detras. -> {"openai": bool, "agy": bool}"""
+    return {"openai": openai_conectado(), "agy": agy_conectado()}
+
+
+def resolver_motor_de_imagen(elegido, conectados):
+    """El motor con el que nace un proyecto nuevo. -> "openai" | "agy"
+
+    Lo elegido en Configuracion manda SI esta conectado. Si no, y solo hay uno
+    conectado, ese: elegir OpenAI sin clave teniendo Google no puede acabar en
+    un error dentro de la primera imagen. Y si no hay ninguno se levanta
+    `SinMotorDeImagen` en vez de caer en OpenAI por defecto, que era dejar el
+    fallo para el momento de pagar la primera tanda.
+    """
+    elegido = elegido if elegido in ("openai", "agy") else "openai"
+    hay = {"openai": bool((conectados or {}).get("openai")),
+           "agy": bool((conectados or {}).get("agy"))}
+    if hay[elegido]:
+        return elegido
+    otro = "agy" if elegido == "openai" else "openai"
+    if hay[otro]:
+        return otro
+    raise SinMotorDeImagen(
+        "no hay ningún motor de imágenes conectado: conecta tu cuenta de Google "
+        "o una clave de OpenAI en Configuración y vuelve a intentarlo")
+
+
 class trabajo_en_curso:                            # noqa: N801  (es un with)
     """Mientras dure esto, ningun motor se recarga.
 

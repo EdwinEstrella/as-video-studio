@@ -121,6 +121,12 @@ def arrancar(puerto, carpeta):
     # tabla escrita y use lo medido-- se caia por antiguedad. O sea que correr
     # las pruebas BORRABA lo aprendido de las voces del canal.
     entorno["ESTUDIO_ESTADISTICAS"] = os.path.join(carpeta, "estadisticas.json")
+    # SIN CLAVES DE OPENAI HEREDADAS: el modo light comprueba que haya un motor
+    # de imagen conectado antes de crear nada, y una OPENAI_API_KEY exportada en
+    # la maquina de quien corre esto haria que "no hay ninguno" no se pudiera
+    # probar (y que el servidor de prueba usara una clave de verdad).
+    for clave in [k for k in entorno if k.startswith("OPENAI_API_KEY")]:
+        entorno.pop(clave)
     os.makedirs(entorno["ESTUDIO_SECRETOS"], exist_ok=True)
     proceso = subprocess.Popen(
         [PYTHON, APP, "--puerto", str(puerto), "--proyectos", carpeta],
@@ -619,6 +625,7 @@ def probar_voz(cliente, pid):
     ok(isinstance(datos.get("voces"), list) and datos["voces"],
        "el catalogo de voces no viene vacio")
     ok(all("id" in v for v in datos["voces"]), "cada voz trae su id")
+    igual(datos.get("aviso"), "", "y sin aviso cuando el catalogo llega bien")
 
     respuesta, datos = cliente.post(f"/api/proyectos/{pid}/voz/previsualizar",
                                     {"params": {"preset": "documental_sobrio"},
@@ -2303,6 +2310,123 @@ def probar_el_reloj_de_lo_que_queda_por_hacer():
           "no saber repartir el reloj no puede tumbar una tanda")
 
 
+def probar_que_el_catalogo_de_voces_no_da_502():
+    """Si Cartesia falla, `/api/voces` contesta 200 con respaldo Y el motivo.
+
+    Detras del proxy un 502 del origen lo sustituye una pagina de error suya sin
+    el mensaje, y la pantalla acababa diciendo «no hay voces clonadas» cuando lo
+    que pasaba era otra cosa. Se llama a la funcion de la ruta con el catalogo
+    roto de dos maneras: la excepcion de siempre y el SystemExit de los motores.
+    """
+    seccion("EL CATALOGO DE VOCES NO SE CAE CON CARTESIA")
+    sys.path.insert(0, RAIZ_ESTUDIO)
+    import app as servidor                                    # noqa: PLC0415
+    p4 = servidor.PASOS_MODULOS.p4_voz
+    original = p4.listar_voces
+
+    def caido(**_):
+        raise RuntimeError("Cartesia contesto 503: mantenimiento")
+
+    def sin_clave(**_):
+        raise SystemExit("No encuentro CARTESIA_API_KEY")
+
+    try:
+        for roto, motivo in ((caido, "mantenimiento"), (sin_clave, "CARTESIA_API_KEY")):
+            p4.listar_voces = roto
+            datos = servidor.catalogo_voces_global(
+                idioma="es", nativas=0, solo_nativas=0, refrescar=0)
+            ok(isinstance(datos.get("voces"), list) and datos["voces"],
+               f"cae a las voces de ejemplo ({motivo})")
+            igual(datos["total"], len(datos["voces"]), "con su total")
+            ok(motivo in datos.get("aviso", ""),
+               f"y el motivo real viaja en `aviso`: {datos.get('aviso')!r}")
+    finally:
+        p4.listar_voces = original
+
+
+def probar_el_buzon_de_imagenes_de_apoyo():
+    """Las imagenes del buzon viven hasta que el estilo sale bien.
+
+    Se vaciaban al COPIARLAS al taller. Si el intento fallaba --un 403, un cupo--
+    la pantalla seguia enseñando las miniaturas, volver a pulsar «Generar»
+    mandaba los mismos nombres y el servidor ya no tenia ninguno: la guia moria
+    con «hacen falta al menos 3 fotogramas». Aqui se prueban las piezas, sin
+    lanzar el trabajo (que llamaria al CLI de Claude y pagaria imagenes).
+    """
+    seccion("EL BUZON DE IMAGENES SOBREVIVE A UN INTENTO FALLIDO")
+    import types                                              # noqa: PLC0415
+    sys.path.insert(0, RAIZ_ESTUDIO)
+    import app as servidor                                    # noqa: PLC0415
+
+    raiz_antes = servidor.raiz_proyectos()
+    tmp = tempfile.mkdtemp(prefix="estudio_buzon_")
+    try:
+        servidor.fijar_raiz_proyectos(tmp)
+        buzon = servidor._carpeta_aportadas()
+        os.makedirs(buzon)
+        nombres = [f"{i:012x}.png" for i in range(1, 5)]
+        for n in nombres:
+            with open(os.path.join(buzon, n), "wb") as fh:
+                fh.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+
+        encargo = {"estilo_imagenes": nombres[:3]}
+        rutas = servidor._aportadas_pedidas(encargo)
+        igual(len(rutas), 3, "las tres que pide el encargo se encuentran")
+
+        taller = types.SimpleNamespace(proyecto=types.SimpleNamespace(
+            raiz=os.path.join(tmp, "taller")))
+        dentro = servidor._sembrar_aportadas(taller, rutas)
+        igual(len(dentro), 3, "se copian al taller")
+        igual(sorted(os.listdir(buzon)), sorted(nombres),
+              "y el buzon NO se vacia al copiar: si el intento falla se reintenta")
+
+        # el segundo intento (otro taller, los mismos nombres) sigue funcionando
+        otro = types.SimpleNamespace(proyecto=types.SimpleNamespace(
+            raiz=os.path.join(tmp, "taller2")))
+        igual(len(servidor._sembrar_aportadas(otro, servidor._aportadas_pedidas(
+            encargo))), 3, "volver a pulsar «Generar» encuentra las mismas tres")
+
+        # una que falta NO se tira en silencio
+        try:
+            servidor._aportadas_pedidas({"estilo_imagenes": nombres[:2] + ["f" * 12 + ".png"]})
+            ok(False, "faltando una tenia que dar 400")
+        except servidor.ErrorApi as fallo:
+            igual(fallo.codigo, 400, "faltando una, 400")
+            igual(fallo.extra.get("faltan"), ["f" * 12 + ".png"], "que dice cual")
+
+        # retomar: sin ninguna nueva se sigue con las copias del taller
+        for n in nombres:
+            os.remove(os.path.join(buzon, n))
+        igual(servidor._aportadas_pedidas(encargo, taller=taller), [],
+              "retomar sin nada en el buzon reutiliza lo del taller")
+        igual(len(servidor._sembrar_aportadas(taller, [])), 3,
+              "y no borra las copias que ya tiene")
+        try:
+            servidor._aportadas_pedidas(encargo, taller=types.SimpleNamespace(
+                proyecto=types.SimpleNamespace(raiz=os.path.join(tmp, "vacio"))))
+            ok(False, "retomar un taller sin copias y sin buzon tenia que dar 400")
+        except servidor.ErrorApi as fallo:
+            igual(fallo.codigo, 400, "y un taller sin copias ni buzon da 400")
+
+        # SOLO AL TERMINAR BIEN se vacia el buzon
+        for n in nombres:
+            with open(os.path.join(buzon, n), "wb") as fh:
+                fh.write(b"x")
+        servidor._vaciar_buzon(encargo)
+        igual(sorted(os.listdir(buzon)), [nombres[3]],
+              "al terminar bien se quitan las del encargo y no las de otro")
+
+        # lo abandonado se barre por antiguedad
+        vieja = os.path.join(buzon, nombres[3])
+        antiguo = time.time() - (servidor.DIAS_BUZON + 1) * 86400
+        os.utime(vieja, (antiguo, antiguo))
+        servidor._barrer_buzon()
+        igual(os.listdir(buzon), [], "y lo que nadie uso en una semana se barre")
+    finally:
+        servidor.fijar_raiz_proyectos(raiz_antes)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def probar_que_la_barra_light_no_ensena_la_cocina():
     """Las barras del modo light leen el mensaje PUBLICO y nunca el de casa.
 
@@ -2762,7 +2886,7 @@ def probar_modo_light(cliente):
 
     # ---- el encargo se valida ANTES de crear ningun taller
     base = {"nombre": "Canal de prueba", "idioma": "es",
-            "estilo_imagenes": ["x.png", "y.png"],
+            "estilo_imagenes": ["x.png", "y.png", "z.png"],
             "estilo_prompt": "dibujo plano de linea gruesa",
             "tono_prompt": "serio pero cercano, sin dramatismo",
             "voz_prompt": "grave, pausada, sin sonar a locutor"}
@@ -2772,16 +2896,29 @@ def probar_modo_light(cliente):
             # EL ESTILO SON IMAGENES: sin ellas no hay de donde copiar, y lo
             # escrito solo acompana. Un parrafo suelto se lo inventa todo.
             ({"estilo_imagenes": []}, "sin imagenes para el estilo"),
+            # LAS MISMAS TRES QUE PIDE LA GUIA: con una o dos, el formulario
+            # dejaba pulsar «Generar» y la guia moria despues de crear el taller
+            ({"estilo_imagenes": ["x.png"]}, "con una sola imagen"),
+            ({"estilo_imagenes": ["x.png", "y.png"]}, "con dos imagenes"),
             ({"voz_prompt": ""}, "sin voz"),
             ({"tono_prompt": ""}, "sin tono"),
             ({"tono_prompt": "cor"}, "con un tono de tres letras")):
+        # /plan NO da 400 con el formulario a medias: se pregunta mientras se
+        # escribe, y un 400 por tecla llenaba la consola del navegador de rojo.
+        # Da 200 con `falta` (el motivo) y sin plan; crear de verdad si da 400.
         respuesta, datos = cliente.post("/api/presets-light/plan",
                                         dict(base, **cambio))
-        igual(respuesta.status_code, 400, f"un encargo {etiqueta} da 400")
+        igual(respuesta.status_code, 200, f"un encargo {etiqueta} da 200 en /plan…")
+        ok(len(datos.get("falta") or "") > 20 and not datos.get("plan"),
+           f"…con el motivo en `falta` y sin plan ({datos.get('falta')!r})")
+        respuesta, datos = cliente.post("/api/presets-light", dict(base, **cambio))
+        igual(respuesta.status_code, 400,
+              f"pero crearlo de verdad {etiqueta} sigue dando 400")
 
     # ---- el plan: tandas, tiempos y paralelismo
     respuesta, datos = cliente.post("/api/presets-light/plan", base)
     igual(respuesta.status_code, 200, "un encargo completo devuelve su plan")
+    igual(datos.get("falta"), "", "y sin nada que falte")
     plan = datos.get("plan") or {}
     tandas = plan.get("tandas") or []
     ids = [[t["id"] for t in tanda] for tanda in tandas]
@@ -2879,6 +3016,29 @@ def probar_video_light(cliente):
     igual(respuesta.status_code, 200, "hay un estilo con el que hacer el vídeo")
     estilo_id = (datos.get("preset") or {}).get("id") or ""
 
+    # ---- SIN NINGUN MOTOR DE IMAGEN CONECTADO NO SE CREA NADA. Antes el video
+    # nacia en OpenAI aunque no hubiera clave, y el fallo salia en el primer
+    # plano, con la tanda ya lanzada.
+    def carpetas():
+        return set(os.listdir(cliente.carpeta))
+    antes = carpetas()
+    respuesta, datos = cliente.post(f"/api/presets-light/{estilo_id}/video",
+                                    {"nombre": "Sin motor", "material": "algo"})
+    igual(respuesta.status_code, 409, "sin Google ni OpenAI conectados, 409")
+    ok("Google" in (datos.get("error") or "") and "OpenAI" in datos["error"],
+       f"diciendo que se conecte uno: {datos.get('error')!r}")
+    igual(carpetas(), antes, "y sin dejar ninguna carpeta")
+
+    # Google es lo ELEGIDO pero solo hay OpenAI: el video nace en OpenAI, con la
+    # calidad del ajuste (el estilo no trae ninguna). Y un ajuste no se lee al
+    # generar: se escribe aqui, al nacer.
+    respuesta, _ = cliente.put("/api/claves", {"openai": [
+        {"etiqueta": "prueba", "clave": "sk-" + "a" * 40}]})
+    igual(respuesta.status_code, 200, "se conecta una clave de OpenAI")
+    respuesta, _ = cliente.put("/api/ajustes", {"motor_imagen": "agy",
+                                                "calidad_imagen": "medium"})
+    igual(respuesta.status_code, 200, "y el ajuste dice Google y calidad media")
+
     # ---- crear el video: los cuatro campos de la pantalla en un POST
     respuesta, creado = cliente.post(f"/api/presets-light/{estilo_id}/video", {
         "nombre": "El hackeo del banco",
@@ -2903,6 +3063,16 @@ def probar_video_light(cliente):
     respuesta, lista = cliente.get("/api/proyectos")
     ok(any(p["id"] == vid for p in lista["proyectos"]),
        "el vídeo del modo light SALE en la lista de proyectos")
+
+    respuesta, assets = cliente.get(f"/api/proyectos/{vid}/pasos/assets")
+    par_assets = assets.get("params") or {}
+    ok(par_assets.get("motor_imagen") in (None, "openai"),
+       f"elegido Google pero solo hay OpenAI: el video nace en OpenAI ({par_assets})")
+    igual(par_assets.get("calidad"), "medium",
+          "y con la calidad del ajuste, que el estilo no trae")
+    respuesta, _ = cliente.put("/api/claves", {"openai": []})
+    respuesta, _ = cliente.put("/api/ajustes", {"motor_imagen": "openai",
+                                                "calidad_imagen": "low"})
 
     # ---- lo que la pantalla ya decidio esta escrito en los params de siempre
     respuesta, brief = cliente.get(f"/api/proyectos/{vid}/pasos/brief")
@@ -3243,10 +3413,11 @@ def probar_imagenes_de_apoyo(cliente):
     respuesta, datos = cliente.pedir(
         "POST", "/api/presets-light/imagenes",
         files=[("imagenes", ("una.png", png, "image/png")),
-               ("imagenes", ("otra.jpg", png, "image/jpeg"))])
-    igual(respuesta.status_code, 201, "subir dos imagenes responde 201")
+               ("imagenes", ("otra.jpg", png, "image/jpeg")),
+               ("imagenes", ("tercera.png", png, "image/png"))])
+    igual(respuesta.status_code, 201, "subir tres imagenes responde 201")
     subidas = datos.get("imagenes") or []
-    igual(len(subidas), 2, "y las guarda las dos")
+    igual(len(subidas), 3, "y las guarda las tres")
     ok(all(s.get("nombre") and s.get("origen") for s in subidas),
        "cada una vuelve con su nombre guardado y el que traia")
     ok(subidas[0]["nombre"] != subidas[1]["nombre"],
@@ -3282,12 +3453,61 @@ def probar_imagenes_de_apoyo(cliente):
     # un parrafo suelto se inventa todo lo que el parrafo no diga.
     respuesta, datos = cliente.post("/api/presets-light/plan", dict(
         base, estilo_imagenes=[]))
-    igual(respuesta.status_code, 400,
-          "sin imagenes da 400 aunque haya indicaciones")
+    igual(respuesta.status_code, 200, "sin imagenes /plan contesta 200…")
+    ok(datos.get("falta") and not datos.get("plan"),
+       f"…diciendo que falta y sin plan: {datos.get('falta')!r}")
 
     respuesta, datos = cliente.post("/api/presets-light/plan", dict(
         base, estilo_imagenes=[f"x{i}.png" for i in range(tope + 1)]))
-    igual(respuesta.status_code, 400, f"pasarse de {tope} da 400")
+    igual(respuesta.status_code, 200, f"pasarse de {tope}: /plan contesta 200…")
+    ok(datos.get("falta") and not datos.get("plan"), "…con el motivo y sin plan")
+    respuesta, datos = cliente.post("/api/presets-light", dict(
+        base, estilo_imagenes=[f"x{i}.png" for i in range(tope + 1)]))
+    igual(respuesta.status_code, 400, f"y crearlo de verdad da 400")
+
+    # ---- LO QUE PASA AL PULSAR «GENERAR», antes de crear nada ---------------
+    #
+    # Sin ningun motor de imagen conectado (ni Google ni una clave de OpenAI) no
+    # se crea el taller: 409, con la frase de donde conectarlo, y el buzon
+    # intacto. Antes caia en OpenAI y moria en la primera imagen.
+    def talleres():
+        return [n for n in os.listdir(cliente.carpeta)
+                if os.path.isfile(os.path.join(cliente.carpeta, n, "proyecto.json"))
+                and "taller" in n.lower()]
+    antes = set(talleres())
+    respuesta, datos = cliente.post("/api/presets-light",
+                                    dict(base, estilo_imagenes=nombres))
+    igual(respuesta.status_code, 409, "sin Google ni OpenAI conectados, 409")
+    ok("Configuración" in (datos.get("error") or "") and "Google" in datos["error"],
+       f"diciendo donde conectarlos: {datos.get('error')!r}")
+    igual(set(talleres()), antes, "y sin haber creado ningun taller")
+    for n in nombres:
+        respuesta = cliente.sesion.get(
+            f"{cliente.base}/api/presets-light/imagenes/{n}", timeout=30)
+        igual(respuesta.status_code, 200, f"y la imagen {n} sigue en el buzon")
+
+    # Con un motor conectado, una imagen que el servidor ya no tiene NO se tira
+    # en silencio: 400 que dice cual, ANTES de crear el taller. Si se tiraba, la
+    # guia recibia las que quedaban y moria con «hacen falta al menos 3».
+    respuesta, _ = cliente.put("/api/claves", {"openai": [
+        {"etiqueta": "prueba", "clave": "sk-" + "a" * 40}]})
+    igual(respuesta.status_code, 200, "se conecta una clave de OpenAI")
+    perdida = "0" * 12 + ".png"
+    respuesta, datos = cliente.post("/api/presets-light", dict(
+        base, estilo_imagenes=nombres[:2] + [perdida]))
+    igual(respuesta.status_code, 400, "una imagen del buzon que ya no esta: 400")
+    ok(datos.get("faltan") == [perdida] and "vuelve a subirla" in datos["error"],
+       f"que dice cual falta y que hay que subirla otra vez: {datos}")
+    igual(set(talleres()), antes, "sin haber creado ningun taller")
+    respuesta, datos = cliente.post("/api/presets-light", dict(
+        base, estilo_imagenes=[perdida, "1" * 12 + ".png", "2" * 12 + ".png"]))
+    igual(respuesta.status_code, 400, "si faltan varias, tambien")
+    igual(len(datos.get("faltan") or []), 3, "y las dice todas")
+    for n in nombres:
+        respuesta = cliente.sesion.get(
+            f"{cliente.base}/api/presets-light/imagenes/{n}", timeout=30)
+        igual(respuesta.status_code, 200, f"el rechazo no toca el buzon ({n})")
+    cliente.put("/api/claves", {"openai": []})
 
     respuesta, datos = cliente.delete(
         f"/api/presets-light/imagenes/{nombres[0]}")
@@ -3441,6 +3661,8 @@ def main():
         probar_el_avisador_y_los_tramos()
         probar_el_mensaje_publico_de_una_tanda()
         probar_el_reloj_de_lo_que_queda_por_hacer()
+        probar_que_el_catalogo_de_voces_no_da_502()
+        probar_el_buzon_de_imagenes_de_apoyo()
         probar_que_la_barra_light_no_ensena_la_cocina()
         probar_value_de_los_textarea()
         probar_el_gemelo_de_las_marcas_tts()

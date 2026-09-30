@@ -224,6 +224,13 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 |---|---|---|
 | `GET` | `/api/claves` | Que claves hay puestas, sin ninguna clave dentro. |
 | `PUT` | `/api/claves` | Guarda las claves y espeja el .env que leen los motores. |
+| `GET` | `/api/claves/agy` | Las cuentas de Google y como respondieron la ultima vez. NO lanza agy. |
+| `DELETE` | `/api/claves/agy/{cid}` | Quita la cuenta de la lista Y BORRA su carpeta (su login incluido). |
+| `POST` | `/api/claves/agy/{cid}/codigo` | Le pasa a agy el codigo que devolvio la pagina de acceso de Google. |
+| `DELETE` | `/api/claves/agy/{cid}/entrar` | Tira el acceso a medias de esa cuenta. |
+| `POST` | `/api/claves/agy/{cid}/entrar` | Arranca el acceso de esa cuenta y devuelve el enlace donde entrar. |
+| `POST` | `/api/claves/agy/{cid}/probar` | Le habla a esa cuenta con una llamada minima y apunta como responde. |
+| `POST` | `/api/claves/agy/{cid}/salir` | Cierra la sesion de esa cuenta (borra su HOME) sin quitarla de la lista. |
 | `GET` | `/api/claves/cli` | Las cuentas del CLI en orden, con quién hay logueado en cada una. |
 | `POST` | `/api/claves/cli/{cid}/codigo` | Le pasa al CLI el código que devolvió la página de acceso. |
 | `DELETE` | `/api/claves/cli/{cid}/entrar` | Tira el acceso a medias de esa cuenta. |
@@ -261,4 +268,4 @@ Reglas que valen para toda la API y no se repiten en cada fila:
 
 ---
 
-**147 endpoints.** Escrito por `generar_api.py` desde `app.py`.
+**154 endpoints.** Escrito por `generar_api.py` desde `app.py`.
