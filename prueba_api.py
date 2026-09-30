@@ -3863,6 +3863,61 @@ def probar_que_retomar_trae_el_formulario():
        "la pantalla rellena el formulario con el encargo del taller al retomar")
 
 
+def probar_openai_dibuja_sin_referencias():
+    """Sin adjuntos, el motor de OpenAI dibuja desde el texto: no se niega.
+
+    Visto el 30-09: las laminas de un estilo nuevo se dibujan a partir de la
+    guia escrita y SIN adjuntos (`moodboard.dibujar_desde_guia`). Con OpenAI
+    como motor, `generar` se negaba --solo sabia llamar a /images/edits, que
+    pide adjuntos-- y crear un estilo con OpenAI fallaba siempre. Sin adjuntos
+    se llama a /images/generations en JSON; con adjuntos, como siempre.
+    """
+    import base64 as b64                                      # noqa: PLC0415
+
+    seccion("OPENAI DIBUJA SIN REFERENCIAS")
+    sys.path.insert(0, os.path.join(RAIZ_ESTUDIO, "motores", "imagen_openai"))
+    import importlib.util                                     # noqa: PLC0415
+    spec = importlib.util.spec_from_file_location(
+        "imagen_openai_prueba",
+        os.path.join(RAIZ_ESTUDIO, "motores", "imagen_openai", "imagen.py"))
+    motor = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(motor)
+
+    llamadas = []
+
+    class _Respuesta:
+        status_code = 200
+        headers = {}
+        text = ""
+
+        @staticmethod
+        def json():
+            return {"data": [{"b64_json": b64.b64encode(b"PNG").decode()}],
+                    "usage": {"input_tokens": 10}}
+
+    def post(url, **kwargs):
+        llamadas.append((url, kwargs))
+        return _Respuesta()
+
+    original = motor.requests.post
+    motor.requests.post = post
+    try:
+        png, meta = motor.generar("una lamina", [], quality="low",
+                                  api_key="sk-prueba")
+    except Exception as fallo:                                # noqa: BLE001
+        ok(False, f"sin referencias no se niega ({fallo})")
+        return
+    finally:
+        motor.requests.post = original
+    igual(png, b"PNG", "devuelve la imagen")
+    url, kwargs = llamadas[-1] if llamadas else ("", {})
+    ok(url.endswith("/images/generations"), f"llama a /images/generations ({url})")
+    ok("files" not in kwargs and isinstance(kwargs.get("json"), dict),
+       "sin adjuntos va en JSON, no en multipart")
+    igual((kwargs.get("json") or {}).get("model"), motor.MODELO, "con el mismo modelo")
+    igual(meta.get("refs"), 0, "y dice que no llevaba referencias")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Prueba del servicio HTTP")
     parser.add_argument("--conservar", action="store_true",
@@ -3929,6 +3984,7 @@ def main():
         probar_el_reloj_de_un_trabajo()
         probar_el_sonido_sin_claves()
         probar_que_retomar_trae_el_formulario()
+        probar_openai_dibuja_sin_referencias()
     finally:
         parar(proceso)
         if not argumentos.conservar:

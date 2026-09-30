@@ -28,6 +28,8 @@ import requests
 from PIL import Image
 
 API_URL = "https://api.openai.com/v1/images/edits"
+#: Sin adjuntos: las laminas de un estilo se dibujan desde la guia escrita.
+API_URL_SIN_REFERENCIAS = "https://api.openai.com/v1/images/generations"
 MODELO = "gpt-image-2"
 
 PRECIO = {"low": 0.006, "medium": 0.041, "high": 0.165}
@@ -609,18 +611,14 @@ def _al_dia(destino, origen):
 
 def generar(prompt, referencias, *, quality="low", tamano="apaisado",
             api_key=None, reintentos=6):
-    # Sin referencias esta llamada NO se puede hacer, y hay que decirlo aqui.
-    # Motivo: requests solo pone 'multipart/form-data' cuando files no esta
-    # vacio; con la lista vacia cae a 'x-www-form-urlencoded', que es justo lo
-    # que /v1/images/edits rechaza. El sintoma era un 400 de la API diciendo
-    # "Unsupported content type", que suena a fallo del servidor y manda a
-    # buscar al sitio equivocado, cuando lo que pasa es que falta una entrada.
-    if not referencias:
-        raise ValueError(
-            "generar() necesita al menos una imagen de referencia: la API de "
-            "edicion de imagenes se llama con adjuntos, y sin ellos la peticion "
-            "sale con el formato equivocado y la rechaza con un error que no "
-            "explica nada. Pon al menos una imagen de estilo.")
+    # SIN REFERENCIAS SE VA A /images/generations, EN JSON. /images/edits no
+    # sirve: requests solo pone 'multipart/form-data' cuando files no esta
+    # vacio, y con la lista vacia cae a 'x-www-form-urlencoded', que edits
+    # rechaza con un "Unsupported content type" que no explica nada. Y negarse
+    # tampoco: las laminas de un estilo nuevo se dibujan desde la guia escrita
+    # y sin adjuntos (`moodboard.dibujar_desde_guia`), asi que crear un estilo
+    # con OpenAI fallaba siempre.
+    referencias = list(referencias or [])
     faltan = [r for r in referencias if not os.path.exists(r)]
     if faltan:
         raise ValueError("estas imagenes de referencia no existen: "
@@ -651,10 +649,14 @@ def generar(prompt, referencias, *, quality="low", tamano="apaisado",
                 archivos.append(("image[]", (os.path.basename(ruta), fh, "image/png")))
             datos = {"model": MODELO, "prompt": prompt,
                      "size": TAMANOS[tamano], "quality": quality, "n": "1"}
+            cabeceras = {"Authorization": f"Bearer {cuenta.clave}"}
             t0 = time.time()
-            r = requests.post(API_URL,
-                              headers={"Authorization": f"Bearer {cuenta.clave}"},
-                              data=datos, files=archivos, timeout=600)
+            if archivos:
+                r = requests.post(API_URL, headers=cabeceras,
+                                  data=datos, files=archivos, timeout=600)
+            else:
+                r = requests.post(API_URL_SIN_REFERENCIAS, headers=cabeceras,
+                                  json=dict(datos, n=1), timeout=600)
             segundos = time.time() - t0
         finally:
             for fh in abiertos:
