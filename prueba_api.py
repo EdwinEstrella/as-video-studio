@@ -3742,6 +3742,86 @@ def probar_taller_oculto(cliente):
           "pero sigue abriendose por su id: es donde corre la generacion")
 
 
+def probar_el_sonido_sin_claves():
+    """Sin Jamendo ni FreeSound, la musica y los efectos se SALTAN, no cortan.
+
+    La guia de inicio lo promete con estas palabras: «si no está, el Estudio lo
+    ve y monta el vídeo sin música, sin pedirla». La tanda del video corre las
+    dos tareas de sonido de fabrica, y hasta el 30-09 las dos se levantaban con
+    «falta JAMENDO_CLIENT_ID en C:\\IA\\secrets\\.env» --una ruta de otra
+    maquina-- y el MP4 no llegaba a montarse. El render ya sabe montar sin
+    musica ni efectos; lo unico que sobraba era el fallo.
+
+    Y NO SE ESCRIBE NADA en los params: guardar una musica o unos efectos
+    vacios moveria la firma del render sin que nadie lo haya pedido.
+    """
+    seccion("EL SONIDO SIN CLAVES SE SALTA Y NO CORTA LA TANDA")
+    sys.path.insert(0, RAIZ_ESTUDIO)
+    import app as servidor                                    # noqa: PLC0415
+
+    escritos = []
+
+    class _Estado:
+        @staticmethod
+        def params(_paso):
+            return {}
+
+        @staticmethod
+        def actualizar_params(paso, cambios):
+            escritos.append((paso, cambios))
+
+    class _Ctx:
+        id = "x"
+        estado = _Estado()
+
+    class _SonidoSinClaves:
+        PAPELES = {"golpe": {"nombre": "golpe"}}
+
+        @staticmethod
+        def hay_claves():
+            return False, False
+
+        @staticmethod
+        def surtir(*_a, **_k):
+            raise RuntimeError("falta FREESOUND_API_KEY en C:\\IA\\secrets\\.env")
+
+        @staticmethod
+        def montar_banda(*_a, **_k):
+            raise RuntimeError("falta JAMENDO_CLIENT_ID en C:\\IA\\secrets\\.env")
+
+    dichos = []
+
+    def avisar(valor, mensaje="", publico=""):
+        dichos.append(mensaje)
+
+    original = servidor._sonido
+    servidor._sonido = lambda: _SonidoSinClaves
+    try:
+        for nombre, correr in (
+                ("la musica", lambda: servidor._correr_banda(avisar, _Ctx(), None)),
+                ("los efectos", lambda: servidor._correr_surtir_efectos(
+                    avisar, _Ctx(), ["golpe"], False))):
+            del dichos[:]
+            try:
+                salida = correr()
+            except Exception as fallo:                        # noqa: BLE001
+                ok(False, f"{nombre} sin clave no corta la tanda ({fallo})")
+                continue
+            ok(bool((salida or {}).get("omitida")), f"{nombre} sin clave se salta")
+            texto = " ".join(dichos + [str((salida or {}).get("resumen") or "")])
+            ok("Configuración" in texto,
+               f"{nombre}: el aviso dice donde se pone la clave ({texto!r})")
+            ok("C:\\IA" not in texto, f"{nombre}: el aviso no nombra otra maquina")
+        igual(escritos, [], "sin claves no se escribe nada en los params")
+    finally:
+        servidor._sonido = original
+
+    fuente = open(os.path.join(RAIZ_ESTUDIO, "app.py"), encoding="utf-8").read() \
+        + open(os.path.join(RAIZ_ESTUDIO, "pasos", "sonido.py"), encoding="utf-8").read()
+    ok("C:\\\\IA\\\\secrets" not in fuente,
+       "ningun mensaje manda a la carpeta de claves de otra maquina")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Prueba del servicio HTTP")
     parser.add_argument("--conservar", action="store_true",
@@ -3806,6 +3886,7 @@ def main():
         probar_que_no_falta_ningun_nombre_en_la_pantalla()
         probar_que_no_falta_ningun_nombre_en_el_servidor()
         probar_el_reloj_de_un_trabajo()
+        probar_el_sonido_sin_claves()
     finally:
         parar(proceso)
         if not argumentos.conservar:

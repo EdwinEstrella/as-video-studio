@@ -5265,8 +5265,23 @@ def guardar_sonido(pid: str, cuerpo: dict = Body(default=None)):
     return {"guardado": list(cambios), "estado": ctx.estado.estado_de("render")}
 
 
+def _sonido_omitido(avisar, que, servicio):
+    """La tarea de sonido que se salta por falta de clave. -> la salida
+
+    Es lo que promete la guia de inicio: sin la clave, el video se monta sin
+    eso, sin pedirla. NO se escribe nada en los params: una musica o unos
+    efectos vacios moverian la firma del render sin que nadie lo pidiera.
+    """
+    resumen = (f"sin {que}: falta la clave de {servicio}, se pone en "
+               f"Configuración")
+    avisar(1.0, resumen)
+    return {"omitida": True, "resumen": resumen}
+
+
 def _correr_surtir_efectos(avisar, ctx, papeles, salteado):
     sonido = _sonido()
+    if not sonido.hay_claves()[1]:
+        return _sonido_omitido(avisar, "efectos de sonido", "FreeSound")
     render = ctx.estado.params("render") or {}
     surtido = dict(render.get("efectos") or {})
     total = len(papeles)
@@ -5283,6 +5298,8 @@ def _correr_surtir_efectos(avisar, ctx, papeles, salteado):
 def _correr_banda(avisar, ctx, tramos):
     """Monta la banda sonora entera sin preguntar nada. Ver sonido.montar_banda."""
     sonido = _sonido()
+    if not sonido.hay_claves()[0]:
+        return _sonido_omitido(avisar, "música", "Jamendo")
     plan = PASOS_MODULOS.p6_assets.plan_actual(ctx.proyecto, "assets", estado=ctx.estado) or {}
     escenas = plan.get("escenas") or []
     if not escenas:
@@ -5334,7 +5351,7 @@ def montar_banda_sonora(pid: str, cuerpo: dict = Body(default=None)):
     sonido = _sonido()
     datos = _cuerpo(cuerpo)
     if not sonido.hay_claves()[0]:
-        raise ErrorApi(409, "falta JAMENDO_CLIENT_ID en C:\\IA\\secrets\\.env")
+        raise ErrorApi(409, "falta la clave de Jamendo: se pone en Configuración")
     # los tramos se pueden pasar retocados desde avanzadas (otro ánimo), pero el
     # camino normal es no pasar nada y que los deduzca del ritmo
     tramos = datos.get("tramos") if isinstance(datos.get("tramos"), list) else None
@@ -5408,7 +5425,7 @@ def surtir_efectos(pid: str, cuerpo: dict = Body(default=None)):
         raise ErrorApi(400, f"papeles desconocidos: {', '.join(desconocidos)}. "
                             f"Los que hay son: {', '.join(sonido.PAPELES)}")
     if not sonido.hay_claves()[1]:
-        raise ErrorApi(409, "falta FREESOUND_API_KEY en C:\\IA\\secrets\\.env")
+        raise ErrorApi(409, "falta la clave de FreeSound: se pone en Configuración")
     # 'salteado' rota por qué consulta se empieza: volver a pulsar trae OTROS
     # sonidos en vez de los mismos, que es lo que se espera de «buscar más».
     salteado = int(datos.get("salteado") or 0)

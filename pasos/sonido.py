@@ -8,8 +8,9 @@ desconocido:
     musica    Jamendo API v3.0      https://api.jamendo.com/v3.0/tracks/
     efectos   Freesound API v2      https://freesound.org/apiv2/search/text/
 
-Las claves viven en `C:\\IA\\secrets\\.env` (JAMENDO_CLIENT_ID,
-FREESOUND_API_KEY), NUNCA en el repo, igual que las de OpenAI.
+Las claves (JAMENDO_CLIENT_ID, FREESOUND_API_KEY) se ponen en Configuracion y
+viven en `<secretos>/.env` (ver RUTA_SECRETOS), NUNCA en el repo, igual que
+las de OpenAI.
 
 EL BANCO, Y POR QUE UN VIDEO NO SUENA DISTINTO CADA VEZ
 --------------------------------------------------------
@@ -298,7 +299,7 @@ def buscar_musica(animo="sobrio", duracion_s=0, cuantas=12, velocidad="low",
     """
     claves = _claves()
     if not claves.get("JAMENDO_CLIENT_ID"):
-        raise RuntimeError("falta JAMENDO_CLIENT_ID en C:\\IA\\secrets\\.env")
+        raise RuntimeError("falta la clave de Jamendo: se pone en Configuración")
     etiquetas = ANIMOS.get(animo, animo)
     if extra:
         etiquetas = f"{etiquetas} {extra}".strip()
@@ -762,7 +763,7 @@ def buscar_efectos(consulta, dur_min=0.2, dur_max=8.0, cuantos=15):
     """
     claves = _claves()
     if not claves.get("FREESOUND_API_KEY"):
-        raise RuntimeError("falta FREESOUND_API_KEY en C:\\IA\\secrets\\.env")
+        raise RuntimeError("falta la clave de FreeSound: se pone en Configuración")
     respuesta = requests.get(
         "https://freesound.org/apiv2/search/text/", timeout=45,
         headers={"Authorization": "Token " + claves["FREESOUND_API_KEY"]},
