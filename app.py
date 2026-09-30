@@ -7295,6 +7295,22 @@ def borrar_imagen_light(nombre: str):
     return {"borrada": os.path.basename(rutas[0])}
 
 
+#: Donde guarda el taller el formulario con el que se lanzo.
+CONFIG_ENCARGO_TALLER = "encargo_de_taller"
+
+
+def _guardar_encargo_del_taller(proyecto, encargo):
+    """Guarda en el taller el formulario con el que se lanza.
+
+    El formulario vivia solo en la memoria de la pagina: una recarga lo perdia
+    y «Retomar» abria el taller en blanco, y desde otro aparato no habia nada
+    que recuperar. Va en la config del taller, que es lo que ya lee
+    `_talleres_sueltos`, y no en los params: no entra en ninguna firma.
+    """
+    proyecto.config[CONFIG_ENCARGO_TALLER] = dict(encargo)
+    proyecto.guardar_config()
+
+
 def _talleres_sueltos():
     """Talleres sin preset: intentos que se quedaron a medias. -> [ficha]
 
@@ -7326,7 +7342,8 @@ def _talleres_sueltos():
         sueltos.append({"id": ficha.get("id"),
                         "nombre": ficha.get("nombre") or ficha.get("id"),
                         "creado": ficha.get("creado", ""),
-                        "actualizado": ficha.get("actualizado", "")})
+                        "actualizado": ficha.get("actualizado", ""),
+                        "encargo": ficha.get(CONFIG_ENCARGO_TALLER)})
     sueltos.sort(key=lambda f: str(f.get("actualizado") or ""), reverse=True)
     return sueltos
 
@@ -8092,6 +8109,7 @@ def crear_preset_light(cuerpo: dict = Body(default=None)):
         rutas = _aportadas_pedidas(encargo)
         ctx = _crear_taller(encargo)
     _sembrar_taller(ctx, encargo)
+    _guardar_encargo_del_taller(ctx.proyecto, encargo)
     # ANTES de lanzar: la guia es la primera tarea que las mira, y retomar un
     # taller no puede perderlas -- se vuelven a copiar y ya estaban.
     aportadas = _sembrar_aportadas(ctx, rutas)

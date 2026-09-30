@@ -5868,7 +5868,14 @@ function vistaGaleriaLight() {
         `${taller.nombre} · ${fechaCorta(taller.actualizado) || ''}`),
       h('button', {
         clase: 'mini',
-        onclick: () => irALight('crear', { taller: taller.id }),
+        /* CON LO QUE SE ESCRIBIO. El formulario vivia solo en memoria y una
+           recarga lo dejaba en blanco; el servidor lo guarda en el taller al
+           lanzarlo, asi que se retoma igual desde el movil o desde otro PC. */
+        onclick: () => {
+          APP.light.encargo = null;
+          if (taller.encargo) Object.assign(encargoLight(), taller.encargo);
+          irALight('crear', { taller: taller.id });
+        },
       }, 'Retomar'),
       h('button', {
         clase: 'mini peligro', onclick: () => descartarTallerLight(taller),

@@ -3822,6 +3822,47 @@ def probar_el_sonido_sin_claves():
        "ningun mensaje manda a la carpeta de claves de otra maquina")
 
 
+def probar_que_retomar_trae_el_formulario():
+    """Un estilo a medias se retoma CON lo escrito, desde cualquier aparato.
+
+    Visto el 30-09: el formulario del estilo solo vivia en la memoria de la
+    pagina. Al recargar, «Retomar» abria el taller con el formulario en blanco,
+    y desde el movil u otro PC no habia nada que recuperar. Ahora el encargo se
+    guarda en el taller al lanzarlo y viaja en la lista de intentos a medias.
+    """
+    from nucleo.proyecto import Proyecto
+
+    seccion("RETOMAR UN ESTILO A MEDIAS TRAE EL FORMULARIO")
+    sys.path.insert(0, RAIZ_ESTUDIO)
+    import app as servidor                                    # noqa: PLC0415
+
+    raiz = tempfile.mkdtemp(prefix="estudio_talleres_")
+    encargo = {"nombre": "Cartoon", "idioma": "es",
+               "estilo_imagenes": [{"nombre": "a.png"}],
+               "estilo_prompt": "igual pero más frío",
+               "tono_prompt": "como en la barra de un bar", "voz_prompt": "grave",
+               "voz_id": "", "ritmo": "medio"}
+    originales = (servidor.raiz_proyectos, servidor._preset_o_400)
+    servidor.raiz_proyectos = lambda: raiz
+    servidor._preset_o_400 = lambda _f: {}
+    try:
+        proyecto = Proyecto.crear(raiz, "taller Cartoon")
+        proyecto.config[servidor.CONFIG_TALLER] = True
+        proyecto.guardar_config()
+        servidor._guardar_encargo_del_taller(proyecto, encargo)
+        sueltos = servidor._talleres_sueltos()
+        igual(len(sueltos), 1, "el taller a medias sale en la lista")
+        igual((sueltos[0] if sueltos else {}).get("encargo"), encargo,
+              "y trae el formulario tal y como se lanzo")
+    finally:
+        servidor.raiz_proyectos, servidor._preset_o_400 = originales
+        shutil.rmtree(raiz, ignore_errors=True)
+
+    fuente = open(os.path.join(RAIZ_ESTUDIO, "web", "app.js"), encoding="utf-8").read()
+    ok("taller.encargo" in fuente,
+       "la pantalla rellena el formulario con el encargo del taller al retomar")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Prueba del servicio HTTP")
     parser.add_argument("--conservar", action="store_true",
@@ -3887,6 +3928,7 @@ def main():
         probar_que_no_falta_ningun_nombre_en_el_servidor()
         probar_el_reloj_de_un_trabajo()
         probar_el_sonido_sin_claves()
+        probar_que_retomar_trae_el_formulario()
     finally:
         parar(proceso)
         if not argumentos.conservar:
